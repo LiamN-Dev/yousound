@@ -90,7 +90,8 @@ const getPort = () => {
   if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
     return parseInt(process.argv[portArgIndex + 1], 10);
   }
-  if (process.env.NODE_ENV === 'production' && process.env.PORT) {
+  // Render (and most hosts) inject PORT; always honor it, regardless of NODE_ENV.
+  if (process.env.PORT) {
     return parseInt(process.env.PORT, 10);
   }
   return 3000;
@@ -2506,7 +2507,9 @@ async function startServer() {
     }
   }, 10 * 60 * 1000);
 
-  const isProd = process.env.NODE_ENV === 'production';
+  // Render sets RENDER=true; treat it as production even if NODE_ENV isn't set,
+  // otherwise the server falls into Vite dev mode and the page can render blank.
+  const isProd = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 
   if (!isProd) {
     const vite = await createViteServer({
@@ -2516,12 +2519,31 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
-    if (fs.existsSync(distPath)) {
-      app.use(express.static(distPath));
-      app.get('*', (req, res) => {
-        res.sendFile(path.resolve(distPath, 'index.html'));
-      });
+    const indexHtml = path.join(distPath, 'index.html');
+
+    if (!fs.existsSync(indexHtml)) {
+      console.error(
+        `[static] ${indexHtml} not found. Did the Render build command run "npm run build"?`
+      );
     }
+
+    // Serve the built frontend (hashed JS/CSS live in dist/assets)
+    app.use(express.static(distPath, { index: false }));
+
+    // Unknown API routes should 404 as JSON, not return the HTML shell
+    app.use('/api', (_req, res) => {
+      res.status(404).json({ success: false, error: 'API route not found' });
+    });
+
+    // SPA fallback: only for page navigations, never for files with an extension.
+    // A missing /assets/xyz.js must 404, not return index.html (which causes a blank screen).
+    app.get('*', (req, res, next) => {
+      if (path.extname(req.path)) return next();
+      if (!fs.existsSync(indexHtml)) {
+        return res.status(500).send('Frontend build missing: run "npm run build" before starting the server.');
+      }
+      res.sendFile(indexHtml);
+    });
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
