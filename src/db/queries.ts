@@ -846,6 +846,22 @@ export async function getMediaFileDb(id: string) {
 }
 
 // ----------------- CHAT SYSTEM QUERIES -----------------
+export async function getChatRequestByIdDb(id: string) {
+  if (!(await checkSqlAvailability())) {
+    return localStore.getChatRequestById?.(id) || null;
+  }
+  try {
+    const rows = await db
+      .select()
+      .from(chatRequests)
+      .where(eq(chatRequests.id, id))
+      .limit(1);
+    return rows[0] || localStore.getChatRequestById?.(id) || null;
+  } catch (error) {
+    return localStore.getChatRequestById?.(id) || null;
+  }
+}
+
 export async function getChatRequestsDb() {
   if (!(await checkSqlAvailability())) return localStore.getChatRequests();
   try {
