@@ -70,6 +70,7 @@ export const AdminPipelineManager: React.FC = () => {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { playSong } = useAudio();
+  const [hideVideoFor, setHideVideoFor] = useState<Record<string, boolean>>({});
 
   // Decline Modal State
   const [decliningReq, setDecliningReq] = useState<SongRequest | null>(null);
@@ -178,7 +179,7 @@ export const AdminPipelineManager: React.FC = () => {
   const handleTogglePublish = async (req: SongRequest, shouldPublish: boolean) => {
     setActionError(null);
     try {
-      const result = await adminPublishRequest(req.id, shouldPublish);
+      const result = await adminPublishRequest(req.id, shouldPublish, !!hideVideoFor[req.id]);
       if (!result.success) {
         throw new Error(result.error || 'Failed to update publish state');
       }
@@ -642,7 +643,18 @@ export const AdminPipelineManager: React.FC = () => {
                       </div>
 
                       {/* Publish Toggle Button */}
-                      <div className="flex items-center gap-3 shrink-0">
+                      <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3 shrink-0">
+                        {(req.stagingAudioUrl || req.audioUrl || '').startsWith('youtube:') && (
+                          <label className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!hideVideoFor[req.id]}
+                              onChange={(e) => setHideVideoFor((prev) => ({ ...prev, [req.id]: e.target.checked }))}
+                              className="rounded border-slate-600"
+                            />
+                            <span>Hide video from listeners</span>
+                          </label>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleTogglePublish(req, true)}
