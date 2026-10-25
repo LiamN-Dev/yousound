@@ -22,12 +22,19 @@ declare global {
   }
 }
 
-const YT_SRC_PATTERN = /^youtube:([A-Za-z0-9_-]{11})$/;
+const YT_SRC_PATTERN = /^youtube:([A-Za-z0-9_-]{11})(:hidden)?$/;
 
 export function youtubeIdFromSrc(src: string | undefined | null): string | null {
   if (!src) return null;
   const m = src.trim().match(YT_SRC_PATTERN);
   return m ? m[1] : null;
+}
+
+/** "youtube:VIDEO_ID:hidden" = the admin chose to hide the video box from listeners. */
+export function isYoutubeSrcHidden(src: string | undefined | null): boolean {
+  if (!src) return false;
+  const m = src.trim().match(YT_SRC_PATTERN);
+  return !!(m && m[2]);
 }
 
 let apiPromise: Promise<any> | null = null;
@@ -82,7 +89,8 @@ class YouTubeEngine {
   private backdrop: HTMLDivElement;
   private enlarged = false;
   private active = false; // a YouTube song is loaded
-  private hidden = false; // admin chose to hide the video box
+  private hidden = false; // admin chose to hide the video box (their own view)
+  private songHidden = false; // this song is flagged "hide video" for listeners
   private canHide = false; // only admins get the hide control
   private iframe: HTMLIFrameElement | null = null;
   private player: any = null;
@@ -215,8 +223,9 @@ class YouTubeEngine {
 
   private applyLayout() {
     this.wrapper.style.display = this.active ? 'block' : 'none';
-    const isHidden = this.canHide && this.hidden;
-    this.pill.style.display = this.active && isHidden ? 'block' : 'none';
+    // Admins follow their own Hide/Show choice; listeners follow the song's flag
+    const isHidden = this.canHide ? this.hidden : this.songHidden;
+    this.pill.style.display = this.active && isHidden && this.canHide ? 'block' : 'none';
     if (isHidden) {
       // Keep the player rendered (so playback continues) but move it off screen
       Object.assign(this.wrapper.style, {
@@ -308,8 +317,9 @@ class YouTubeEngine {
   }
 
   /** Point the engine at a video. Playback starts when play() is called. */
-  load(videoId: string) {
+  load(videoId: string, songHidden: boolean = false) {
     this.videoId = videoId;
+    this.songHidden = songHidden;
     this.durationSec = 0;
     this.errorCode = null;
     this.playing = false;
@@ -484,6 +494,7 @@ export class PlaybackRouter {
 
   /** Human-readable reason for the last playback error (YouTube only). */
   lastError: string | null = null;
+  private ytSrc = '';
 
   constructor() {
     this.native = new Audio();
@@ -542,7 +553,7 @@ export class PlaybackRouter {
   }
 
   get src(): string {
-    if (this.mode === 'youtube') return `youtube:${this.yt?.currentVideoId ?? ''}`;
+    if (this.mode === 'youtube') return this.ytSrc;
     return this.native.src;
   }
 
@@ -551,12 +562,13 @@ export class PlaybackRouter {
     const id = youtubeIdFromSrc(url);
     if (id) {
       this.mode = 'youtube';
+      this.ytSrc = url;
       this.native.pause();
       this.native.removeAttribute('src');
       this.native.load();
       const engine = this.getYt();
       engine.setSettings(this._volume, this._muted, this._rate);
-      engine.load(id);
+      engine.load(id, isYoutubeSrcHidden(url));
     } else {
       if (this.mode === 'youtube') this.yt?.stop();
       this.mode = 'native';
