@@ -9,6 +9,7 @@ import { EditSongModal } from './EditSongModal';
 import { AdminSongManager } from './AdminSongManager';
 import { AdminAutoTagRules } from './AdminAutoTagRules';
 import { AdminPipelineManager } from './AdminPipelineManager';
+import { AdminFeedbackManager } from './AdminFeedbackManager';
 import { AdminDatabaseManager } from './AdminDatabaseManager';
 import {
   Shield,
@@ -82,7 +83,7 @@ export const AdminPanel: React.FC = () => {
   const { allSongs, adminAllSongs, addNewSong, deleteSong, updateSong, playSong, clearAllSongs, autoTagRules } = useAudio();
 
   const [adminTab, setAdminTab] = useState<
-    'songs' | 'autotags' | 'requests' | 'banner' | 'approvals' | 'users' | 'maintenance' | 'popups' | 'database'
+    'songs' | 'autotags' | 'requests' | 'feedback' | 'banner' | 'approvals' | 'users' | 'maintenance' | 'popups' | 'database'
   >('songs');
 
   // Song Studio State
@@ -549,6 +550,16 @@ export const AdminPanel: React.FC = () => {
             )}
           </button>
 
+          <button
+            onClick={() => setAdminTab('feedback')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl whitespace-nowrap transition-all ${
+              adminTab === 'feedback'
+                ? 'bg-pink-500 text-white font-bold shadow-md shadow-pink-500/20'
+                : 'text-pink-300 hover:text-white hover:bg-pink-500/10'
+            }`}
+          >
+            <span>Feature Requests & Bugs</span>
+          </button>
           <button
             onClick={() => setAdminTab('banner')}
             className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl whitespace-nowrap transition-all ${
@@ -1100,7 +1111,7 @@ export const AdminPanel: React.FC = () => {
                   <span>YouSong Moderation & Conversion Pipeline</span>
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Four-stage human moderation workflow: Holding Queue Review &rarr; yt-dlp Audio Conversion & Google Drive Upload &rarr; Staging & Test Stream &rarr; Final Publish to YouSong Library.
+                  Four-stage human moderation workflow: Holding Queue Review &rarr; Approve (YouTube embed check) &rarr; Staging & Test Stream &rarr; Final Publish to YouSong Library.
                 </p>
               </div>
             </div>
@@ -1109,6 +1120,8 @@ export const AdminPanel: React.FC = () => {
           </div>
         </div>
       )}
+
+      {adminTab === 'feedback' && <AdminFeedbackManager />}
 
       {/* TAB 3: BANNER & BRANDING */}
       {adminTab === 'banner' && (
