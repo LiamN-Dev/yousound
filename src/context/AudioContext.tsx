@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { PlaybackRouter } from '../services/playbackEngine';
 import { Song, Playlist, RepeatMode, SpotlightConfig, AutoTagRule } from '../types';
 import { storage } from '../services/storage';
 import { useAuth } from './AuthContext';
@@ -67,7 +68,7 @@ const AudioContext = createContext<AudioContextType | undefined>(undefined);
 
 export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<PlaybackRouter | null>(null);
 
   const [allSongs, setAllSongs] = useState<Song[]>(() => storage.getSongs(currentUser));
   const [adminAllSongs, setAdminAllSongs] = useState<Song[]>(() => storage.getAllAdminSongs());
@@ -109,8 +110,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Initialize audio element
   useEffect(() => {
-    const audio = new Audio();
-    audio.preload = 'metadata';
+    const audio = new PlaybackRouter();
     audioRef.current = audio;
 
     const handleTimeUpdate = () => {
@@ -138,21 +138,29 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.warn('Audio playback error for URL:', audio.src);
       setIsPlaying(false);
       if (currentSongRef.current) {
-        setPlaybackError(`Unable to play "${currentSongRef.current.title}". The audio stream or file could not be loaded.`);
+        const reason = audio.lastError || 'The audio stream or file could not be loaded.';
+        setPlaybackError(`Unable to play "${currentSongRef.current.title}". ${reason}`);
       }
+    };
+
+    // YouTube can be paused/resumed from inside its own player; keep our play button in sync
+    const handleStateChange = () => {
+      setIsPlaying(audio.isPlaying);
     };
 
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
     audio.addEventListener('ended', handleEnded);
     audio.addEventListener('error', handleError);
+    audio.addEventListener('statechange', handleStateChange);
 
     return () => {
-      audio.pause();
+      audio.destroy();
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('error', handleError);
+      audio.removeEventListener('statechange', handleStateChange);
     };
   }, []);
 
