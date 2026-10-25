@@ -733,6 +733,30 @@ export const EditSongModal: React.FC<EditSongModalProps> = ({
               </p>
             </div>
 
+            {/* YouTube songs: control whether listeners see the video box */}
+            {/^youtube:[A-Za-z0-9_-]{11}(:hidden)?$/.test(audioUrl.trim()) && (
+              <div className="sm:col-span-2 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+                <label className="flex items-start gap-2.5 cursor-pointer text-xs text-slate-700 dark:text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={audioUrl.trim().endsWith(':hidden')}
+                    onChange={(e) => {
+                      const base = audioUrl.trim().replace(/:hidden$/, '');
+                      setAudioUrl(e.target.checked ? `${base}:hidden` : base);
+                    }}
+                    className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>
+                    <span className="font-semibold text-slate-900 dark:text-white">Hide the video from listeners</span>
+                    <span className="block text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      This is a YouTube song. When checked, listeners hear it without the video box. Admins can still
+                      show it with the player&apos;s Show / Hide buttons. Click Save to apply.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            )}
+
 
             {/* Admin Highlight & Pin Section */}
             <div className="sm:col-span-2 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 space-y-3">
