@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useAudio } from '../context/AudioContext';
 import { useAuth } from '../context/AuthContext';
 import { SongRequest } from '../types';
 import { connectGoogleDrive, getDriveAccessToken } from '../lib/firebase';
@@ -68,6 +69,7 @@ export const AdminPipelineManager: React.FC = () => {
   const [volume, setVolume] = useState<number>(0.85);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const { playSong } = useAudio();
 
   // Decline Modal State
   const [decliningReq, setDecliningReq] = useState<SongRequest | null>(null);
@@ -195,6 +197,24 @@ export const AdminPipelineManager: React.FC = () => {
   const handleTestStreamPlay = (req: SongRequest) => {
     const audioSource = req.stagingAudioUrl || req.audioUrl;
     if (!audioSource) return;
+
+    // YouTube-embed songs play through the main player (shows the video box)
+    if (audioSource.startsWith('youtube:')) {
+      audioRef.current?.pause();
+      setActivePlayingId(null);
+      setIsPlaying(false);
+      playSong({
+        id: `staging-${req.id}`,
+        title: req.songTitle,
+        artist: req.artist || 'Unknown Artist',
+        genre: req.genre || '',
+        duration: req.duration || 180,
+        audioUrl: audioSource,
+        coverUrl: req.coverUrl || '',
+        addedAt: new Date().toISOString(),
+      });
+      return;
+    }
 
     if (activePlayingId === req.id) {
       if (isPlaying) {
@@ -592,7 +612,7 @@ export const AdminPipelineManager: React.FC = () => {
                       <h4 className="text-sm font-bold text-white truncate">{req.songTitle}</h4>
                       <p className="text-xs text-slate-400">{req.artist}</p>
                       <p className="text-[11px] text-cyan-400 mt-1 font-mono">
-                        {req.processingProgress || 'yt-dlp audio extraction & Google Drive upload in progress...'}
+                        {req.processingProgress || 'Checking the YouTube link...'}
                       </p>
                     </div>
                   </div>
@@ -616,7 +636,7 @@ export const AdminPipelineManager: React.FC = () => {
               <span>Staging State & Quality Verification</span>
             </div>
             <p className="text-slate-300 leading-relaxed text-[11px]">
-              These tracks have been converted into clean .mp3 format, uploaded to your Google Drive folder, and temporary server files were deleted. <strong className="text-white">Use the "Test Stream" button to preview sound quality and track length.</strong> When satisfied, click the <strong>"Publish"</strong> toggle to activate the track on the public YouSong library!
+              These tracks play through the official YouTube embedded player (nothing is downloaded or stored). <strong className="text-white">Use the "Test Stream" button to check that the video plays.</strong> When satisfied, click the <strong>"Publish"</strong> toggle to activate the track on the public YouSong library!
             </p>
           </div>
 
