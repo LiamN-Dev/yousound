@@ -52,6 +52,7 @@ import {
   getChatThreadsForUserDb,
   getChatThreadByIdDb,
   createOrForceChatThreadDb,
+  getChatRequestByIdDb,
   setChatThreadTerminatedDb,
   deleteChatThreadDb,
   hideChatThreadForUserDb,
@@ -69,6 +70,13 @@ import {
   initDatabaseSchemaExtensions,
 } from './src/db/queries.ts';
 import { seedDatabaseIfEmpty } from './src/db/seed.ts';
+import { ensureTables } from './src/db/ensureTables.ts';
+import {
+  createFeedbackDb,
+  listFeedbackDb,
+  updateFeedbackDb,
+  deleteFeedbackDb,
+} from './src/db/feedback.ts';
 import { extractAudioFromYouTube, uploadMp3ToGoogleDrive } from './src/services/audioPipeline.ts';
 import {
   generateSupabaseMigrationSql,
@@ -1670,7 +1678,7 @@ app.post('/api/admin/requests/:id/approve-and-process', async (req: Request, res
 app.post('/api/admin/requests/:id/publish', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const { isPublished } = req.body;
+    const { isPublished, hideVideo } = req.body;
     const requestItem = await getRequestByIdDb(id);
     if (!requestItem) {
       return res.status(404).json({ error: 'Request not found' });
@@ -1679,6 +1687,11 @@ app.post('/api/admin/requests/:id/publish', async (req: Request, res: Response) 
     if (isPublished) {
       // Generate a new song record in the public library
       const songId = `song-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      // YouTube songs can be flagged so listeners don't see the video box ("youtube:ID:hidden")
+      let publishAudioUrl = requestItem.audioUrl || '';
+      if (hideVideo && /^youtube:[A-Za-z0-9_-]{11}$/.test(publishAudioUrl)) {
+        publishAudioUrl += ':hidden';
+      }
       const newSong = await insertSongDb({
         id: songId,
         title: requestItem.songTitle,
@@ -1686,7 +1699,7 @@ app.post('/api/admin/requests/:id/publish', async (req: Request, res: Response) 
         album: 'YouSong Community',
         genre: requestItem.genre || 'Vibe / Chill',
         duration: requestItem.duration || 180,
-        audioUrl: requestItem.audioUrl || '',
+        audioUrl: publishAudioUrl,
         coverUrl: requestItem.coverUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop&q=80',
         addedAt: new Date().toISOString(),
         plays: 0,
@@ -2003,7 +2016,22 @@ app.patch('/api/chat/requests/:id', async (req: Request, res: Response) => {
     }
 
     const updated = await updateChatRequestStatusDb(id, status, adminNote);
-    res.json({ success: true, request: updated });
+
+    // Approving a request opens the conversation between the two users
+    let thread = null;
+    if (status === 'approved') {
+      const reqItem: any = (await getChatRequestByIdDb(id)) || updated;
+      if (reqItem?.senderId && reqItem?.receiverId) {
+        thread = await createOrForceChatThreadDb(
+          reqItem.senderId,
+          reqItem.senderUsername || 'User',
+          reqItem.receiverId,
+          reqItem.receiverUsername || 'User',
+          false
+        );
+      }
+    }
+    res.json({ success: true, request: updated, thread });
   } catch (error: any) {
     console.error('Update chat request error:', error);
     res.status(500).json({ error: error.message });
@@ -2060,7 +2088,7 @@ app.post('/api/chat/threads/force', async (req: Request, res: Response) => {
       user1Username || 'User A',
       user2Id,
       user2Username || 'User B',
-      true
+      false
     );
     res.json({ success: true, thread });
   } catch (error: any) {
@@ -2261,6 +2289,103 @@ app.delete('/api/chat/pairing-blocks/:id', async (req: Request, res: Response) =
     res.json({ success: true });
   } catch (error: any) {
     console.error('Delete pairing block error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ----------------- FEATURE REQUESTS & BUG REPORTS -----------------
+const feedbackHits = new Map<string, number[]>();
+
+async function isAdminUserId(uid: unknown): Promise<boolean> {
+  if (!uid || typeof uid !== 'string') return false;
+  try {
+    const u = await getUserByUid(uid);
+    return u?.role === 'admin';
+  } catch {
+    return false;
+  }
+}
+
+app.post('/api/feedback', async (req: Request, res: Response) => {
+  try {
+    const { type, title, details, area, userId, username, userAgent } = req.body || {};
+    if (type !== 'feature' && type !== 'bug') {
+      return res.status(400).json({ error: 'Type must be feature or bug' });
+    }
+    const cleanTitle = String(title || '').trim().slice(0, 140);
+    const cleanDetails = String(details || '').trim().slice(0, 4000);
+    if (!cleanTitle) return res.status(400).json({ error: 'Please add a short title' });
+    if (!cleanDetails) return res.status(400).json({ error: 'Please add some details' });
+
+    // Simple spam guard: 10 submissions per hour per visitor
+    const key = (typeof userId === 'string' && userId) || req.ip || 'anon';
+    const now = Date.now();
+    const recent = (feedbackHits.get(key) || []).filter((t) => now - t < 3600_000);
+    if (recent.length >= 10) {
+      return res.status(429).json({ error: 'Too many submissions. Please try again later.' });
+    }
+    recent.push(now);
+    feedbackHits.set(key, recent);
+
+    let name = String(username || '').trim().slice(0, 60);
+    if (!name && typeof userId === 'string') {
+      const u = await getUserByUid(userId);
+      name = u?.username || '';
+    }
+    const item = await createFeedbackDb({
+      type,
+      title: cleanTitle,
+      details: cleanDetails,
+      area: area ? String(area).slice(0, 60) : null,
+      userId: typeof userId === 'string' ? userId : null,
+      username: name || 'Guest',
+      userAgent: userAgent ? String(userAgent).slice(0, 300) : null,
+    });
+    res.json({ success: true, item });
+  } catch (error: any) {
+    console.error('Create feedback error:', error);
+    res.status(500).json({ error: error.message || 'Could not save your submission' });
+  }
+});
+
+app.get('/api/admin/feedback', async (req: Request, res: Response) => {
+  try {
+    if (!(await isAdminUserId(req.query.userId))) {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    res.json({ items: await listFeedbackDb() });
+  } catch (error: any) {
+    console.error('List feedback error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/admin/feedback/:id', async (req: Request, res: Response) => {
+  try {
+    const { userId, status, adminNote } = req.body || {};
+    if (!(await isAdminUserId(userId))) return res.status(403).json({ error: 'Admin only' });
+    if (status && !['new', 'in_progress', 'done', 'declined'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const ok = await updateFeedbackDb(req.params.id, {
+      status,
+      adminNote: adminNote === undefined ? undefined : String(adminNote).slice(0, 1000),
+    });
+    if (!ok) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Update feedback error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/admin/feedback/:id', async (req: Request, res: Response) => {
+  try {
+    if (!(await isAdminUserId(req.query.userId))) return res.status(403).json({ error: 'Admin only' });
+    await deleteFeedbackDb(req.params.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Delete feedback error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -2479,6 +2604,12 @@ async function fixAllPreviousSongsDuration(audioDir: string): Promise<number> {
 
 // ----------------- START SERVER & VITE -----------------
 async function startServer() {
+  // Make sure every table exists (chat, feedback, ...) before serving traffic
+  try {
+    await ensureTables();
+  } catch (err) {
+    console.warn('[Schema] ensureTables failed:', err);
+  }
   // Ensure schema extensions exist
   await initDatabaseSchemaExtensions();
   // Ensure database has default seed data
