@@ -18,7 +18,10 @@ import {
   Lock,
   X,
   Volume2,
+  Activity,
 } from 'lucide-react';
+
+const STATUS_PAGE_URL = 'https://yousound.betteruptime.com/';
 
 interface HeaderProps {
   activeTab: 'library' | 'playlists' | 'favorites' | 'chat' | 'admin';
@@ -264,6 +267,18 @@ export const Header: React.FC<HeaderProps> = ({
                   <span>Request</span>
                 </button>
 
+                {/* Site status (uptime monitor) */}
+                <a
+                  href={STATUS_PAGE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl font-semibold text-emerald-700 dark:text-emerald-300 hover:text-emerald-900 dark:hover:text-white hover:bg-emerald-50 dark:hover:bg-emerald-600/15 transition-all shrink-0"
+                  title="Check whether YouSong is up (opens in a new tab)"
+                >
+                  <Activity className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span>Status</span>
+                </a>
+
                 {/* 6. Admin Panel (if admin) */}
                 {isAdmin && (
                   <button
@@ -403,6 +418,14 @@ export const Header: React.FC<HeaderProps> = ({
             >
               Request Song
             </button>
+            <a
+              href={STATUS_PAGE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-xs rounded-xl whitespace-nowrap font-semibold shrink-0 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-600/20 border border-emerald-200 dark:border-emerald-500/30"
+            >
+              Status
+            </a>
             {isAdmin && (
               <button
                 onClick={() => setActiveTab('admin')}
