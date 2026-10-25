@@ -70,7 +70,7 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!webLink.trim()) {
+    if (!/(?:youtube\.com|youtu\.be)\//i.test(webLink.trim())) {
       setFeedback('Please provide a valid YouTube link.');
       return;
     }
