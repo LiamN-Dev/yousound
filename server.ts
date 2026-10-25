@@ -1544,6 +1544,33 @@ app.patch('/api/admin/requests/:id', async (req: Request, res: Response) => {
   }
 });
 
+
+// ----------------- YOUTUBE EMBED HELPERS -----------------
+// Songs from requests are played through the official YouTube embedded player.
+// We only store the video ID as audioUrl = "youtube:VIDEO_ID" (no downloading / converting).
+function extractYouTubeVideoId(input: string): string | null {
+  const raw = (input || '').trim();
+  if (!raw) return null;
+  if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+  try {
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    const host = u.hostname.replace(/^www\./, '').replace(/^m\./, '').replace(/^music\./, '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.split('/').filter(Boolean)[0];
+      return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+    }
+    if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      const v = u.searchParams.get('v');
+      if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (['shorts', 'embed', 'live', 'v'].includes(parts[0]) && /^[A-Za-z0-9_-]{11}$/.test(parts[1] || '')) {
+        return parts[1];
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 // Backend Conversion & Cloud Storage (Triggered ONLY After Admin Approval):
 // 1. Rips audio with yt-dlp & converts to .mp3 temporarily on server
 // 2. Uploads .mp3 directly to Google Drive folder using Google Drive API
@@ -1576,77 +1603,56 @@ app.post('/api/admin/requests/:id/approve-and-process', async (req: Request, res
       return res.status(400).json({ error: 'No YouTube link attached to this request' });
     }
 
-    // Mark request as processing
-    await updateRequestFullDb(id, {
-      songTitle: finalTitle,
-      artist: finalArtist,
-      coverUrl: finalCover,
-      genre: finalGenre,
-      status: 'processing',
-      processingProgress: 'Extracting audio with yt-dlp and converting to clean MP3...',
-      processingError: null,
-      reviewedAt: new Date().toISOString(),
-    });
-
-    console.log(`[SongPipeline] Admin approved request ${id} ("${finalTitle}" by "${finalArtist}"). Starting extraction from ${youtubeUrl}...`);
-
-    // 1. Audio extraction via yt-dlp to temporary local file
-    const { tempFilePath, duration } = await extractAudioFromYouTube(youtubeUrl, id);
-
-    let audioUrl = '';
-    let driveFileId = '';
-    let driveFolderId = '';
-
-    // 2. Upload to Google Drive if access token provided
-    if (googleAccessToken) {
-      try {
-        await updateRequestFullDb(id, {
-          processingProgress: 'Uploading converted MP3 to designated Google Drive folder...',
-        });
-
-        const driveResult = await uploadMp3ToGoogleDrive(
-          tempFilePath,
-          finalTitle,
-          finalArtist,
-          googleAccessToken
-        );
-
-        driveFileId = driveResult.fileId;
-        driveFolderId = driveResult.folderId || '';
-        audioUrl = `/api/drive/stream/${driveFileId}`; // proxy stream URL with full range seek support
-
-        console.log(`[SongPipeline] Uploaded to Google Drive successfully. File ID: ${driveFileId}`);
-      } catch (driveErr: any) {
-        console.warn(`[SongPipeline] Google Drive upload error:`, driveErr.message);
-        if (fs.existsSync(tempFilePath)) {
-          const buffer = fs.readFileSync(tempFilePath);
-          const dataUrl = `data:audio/mp3;base64,${buffer.toString('base64')}`;
-          audioUrl = dataUrl;
-          try { fs.unlinkSync(tempFilePath); } catch (_) {}
-        }
-      }
-    } else {
-      // If admin didn't pass Google OAuth token, read buffer, store safely, and delete local file
-      if (fs.existsSync(tempFilePath)) {
-        const buffer = fs.readFileSync(tempFilePath);
-        audioUrl = `data:audio/mp3;base64,${buffer.toString('base64')}`;
-        try { fs.unlinkSync(tempFilePath); } catch (_) {}
-      }
+    const videoId = extractYouTubeVideoId(youtubeUrl);
+    if (!videoId) {
+      return res.status(400).json({ error: 'That does not look like a valid YouTube link.' });
     }
 
-    // 3. Move to 'staging' state where admin can Test Stream before publishing
+    // Check the video exists and allows embedding (YouTube oEmbed returns 401/403 when embedding is off)
+    let oembedTitle = '';
+    try {
+      const oembed = await fetch(
+        `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      if (oembed.status === 401 || oembed.status === 403) {
+        return res.status(400).json({ error: 'The owner of this video does not allow it to be embedded on other sites. Ask the requester for a different upload (for example the artist\'s official audio).' });
+      }
+      if (oembed.status === 404) {
+        return res.status(400).json({ error: 'This YouTube video was not found or is private.' });
+      }
+      if (oembed.ok) {
+        const info: any = await oembed.json();
+        oembedTitle = (info?.title || '').toString();
+      }
+    } catch (checkErr: any) {
+      console.warn('[SongPipeline] YouTube embed check skipped:', checkErr?.message || checkErr);
+    }
+
+    const embedTitle = finalTitle === 'Untitled' && oembedTitle ? oembedTitle : finalTitle;
+    const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+    const embedCover = coverUrl || requestItem.coverUrl || thumbnail;
+    const audioUrl = `youtube:${videoId}`;
+
+    // Straight to staging: nothing to download or convert.
+    // (Real duration is measured by the player the first time the song plays.)
     const staged = await updateRequestFullDb(id, {
+      songTitle: embedTitle,
+      artist: finalArtist,
+      coverUrl: embedCover,
+      genre: finalGenre,
+      reviewedAt: new Date().toISOString(),
       status: 'staging',
       audioUrl: audioUrl,
       stagingAudioUrl: audioUrl,
-      driveFileId: driveFileId || null,
-      driveFolderId: driveFolderId || null,
-      duration: duration || 180,
-      processingProgress: 'Complete. Ready for Test Stream in Staging.',
+      driveFileId: null,
+      driveFolderId: null,
+      duration: 180,
+      processingProgress: 'Ready. Use Test Stream, then Publish.',
       processingError: null,
     });
 
-    console.log(`[SongPipeline] Request ${id} is now in STAGING state. Track duration: ${duration}s. Awaiting admin Test Stream & Publish.`);
+    console.log(`[SongPipeline] Request ${id} approved as YouTube embed (${videoId}) and moved to STAGING.`);
     res.json({ success: true, request: staged });
   } catch (error: any) {
     console.error('[SongPipeline] Conversion & Storage pipeline failed:', error);
