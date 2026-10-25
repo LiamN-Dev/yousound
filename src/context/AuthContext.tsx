@@ -46,7 +46,7 @@ interface AuthContextType {
     metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string },
     googleAccessToken?: string
   ) => Promise<{ success: boolean; request?: SongRequest; error?: string }>;
-  adminPublishRequest: (id: string, isPublished: boolean) => Promise<{ success: boolean; request?: SongRequest; error?: string }>;
+  adminPublishRequest: (id: string, isPublished: boolean, hideVideo?: boolean) => Promise<{ success: boolean; request?: SongRequest; error?: string }>;
 
   // Admin actions
   allUsers: User[];
@@ -248,8 +248,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return result;
   };
 
-  const adminPublishRequest = async (id: string, isPublished: boolean) => {
-    const result = await storage.adminPublishRequest(id, isPublished);
+  const adminPublishRequest = async (id: string, isPublished: boolean, hideVideo: boolean = false) => {
+    const result = await storage.adminPublishRequest(id, isPublished, hideVideo);
     setSongRequests(storage.getRequests());
     return result;
   };
