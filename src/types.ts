@@ -244,3 +244,21 @@ export interface ChatPairingBlock {
   reason?: string;
   createdAt: string;
 }
+
+
+export type FeedbackType = 'feature' | 'bug';
+export type FeedbackStatus = 'new' | 'in_progress' | 'done' | 'declined';
+
+export interface FeedbackItem {
+  id: string;
+  type: FeedbackType;
+  title: string;
+  details: string;
+  area?: string | null;
+  userId?: string | null;
+  username: string;
+  userAgent?: string | null;
+  status: FeedbackStatus;
+  adminNote?: string | null;
+  createdAt: string;
+}
