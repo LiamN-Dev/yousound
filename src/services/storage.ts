@@ -10,6 +10,8 @@ import {
   ChatThread,
   ChatMessage,
   ChatPairingBlock,
+  FeedbackItem,
+  FeedbackStatus,
   SpotlightConfig,
   AutoTagRule,
 } from '../types';
@@ -583,12 +585,12 @@ class StorageService {
     }
   }
 
-  async adminPublishRequest(id: string, isPublished: boolean): Promise<{ success: boolean; request?: SongRequest; error?: string }> {
+  async adminPublishRequest(id: string, isPublished: boolean, hideVideo: boolean = false): Promise<{ success: boolean; request?: SongRequest; error?: string }> {
     try {
       const res = await fetch(`/api/admin/requests/${id}/publish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isPublished }),
+        body: JSON.stringify({ isPublished, hideVideo }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -2263,6 +2265,68 @@ class StorageService {
       console.error('getOrCreateAppealThread error:', e);
     }
     return null;
+  }
+
+  // --- Feature requests & bug reports ---
+  async submitFeedback(payload: {
+    type: 'feature' | 'bug';
+    title: string;
+    details: string;
+    area?: string;
+    userId?: string;
+    username?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, userAgent: navigator.userAgent }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) return { success: false, error: data.error || 'Could not send. Please try again.' };
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Network error' };
+    }
+  }
+
+  async getFeedback(adminUserId: string): Promise<FeedbackItem[]> {
+    try {
+      const res = await fetch(`/api/admin/feedback?userId=${encodeURIComponent(adminUserId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        return data.items || [];
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  async updateFeedback(
+    id: string,
+    adminUserId: string,
+    patch: { status?: FeedbackStatus; adminNote?: string }
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/admin/feedback/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: adminUserId, ...patch }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async deleteFeedback(id: string, adminUserId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/admin/feedback/${encodeURIComponent(id)}?userId=${encodeURIComponent(adminUserId)}`, {
+        method: 'DELETE',
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 }
 
