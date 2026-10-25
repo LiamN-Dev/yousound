@@ -164,7 +164,7 @@ export const AdminPipelineManager: React.FC = () => {
         throw new Error(result.error || 'Conversion process failed');
       }
 
-      setSuccessToast(`"${editState.songTitle}" converted & uploaded to Google Drive! Now in Staging for Test Stream.`);
+      setSuccessToast(`"${editState.songTitle}" approved! Now in Staging for Test Stream.`);
       setActivePipelineTab('staging');
     } catch (err: any) {
       console.error('Approve and process error:', err);
@@ -270,52 +270,6 @@ export const AdminPipelineManager: React.FC = () => {
         onLoadedMetadata={handleAudioTimeUpdate}
       />
 
-      {/* Cloud Storage & Drive OAuth Status Bar */}
-      <div className="p-4 sm:p-5 rounded-3xl bg-slate-900/90 border border-white/10 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
-            <HardDrive className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-white font-display">
-                Google Drive Storage Pipeline
-              </h3>
-              {googleDriveConnected ? (
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> Drive OAuth Ready
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" /> Ready to Connect
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-slate-400">
-              Audio tracks are uploaded directly to the <span className="text-cyan-300 font-mono">YouSong Audio Tracks</span> folder in Google Drive and deleted from server disk.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {!googleDriveConnected ? (
-            <button
-              onClick={handleConnectGoogleDrive}
-              disabled={isConnectingDrive}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold text-xs shadow-md shadow-blue-500/20 transition-all active:scale-95 disabled:opacity-50"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>{isConnectingDrive ? 'Connecting Drive...' : 'Authorize Google Drive'}</span>
-            </button>
-          ) : (
-            <div className="text-right">
-              <span className="text-[11px] text-slate-400 block">Connected Account:</span>
-              <span className="text-xs font-semibold text-emerald-400">{googleAccountEmail || 'Authenticated Admin'}</span>
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Toast & Error Banners */}
       {successToast && (
         <div className="p-3.5 rounded-2xl bg-emerald-950/60 border border-emerald-500/30 text-emerald-200 text-xs flex items-center justify-between gap-3 animate-in fade-in">
@@ -411,7 +365,7 @@ export const AdminPipelineManager: React.FC = () => {
               <span>Mandatory Admin Review Gate</span>
             </div>
             <p className="text-slate-300 leading-relaxed text-[11px]">
-              Submissions in this queue are completely hidden from regular users. <strong className="text-white">Zero server downloading or audio conversion has occurred.</strong> The system is waiting entirely for your manual review. You can fix typos in the title and artist below, then click <strong>"Approve & Process"</strong> to extract audio and upload to Google Drive.
+              Submissions in this queue are completely hidden from regular users. <strong className="text-white">Zero server downloading or audio conversion has occurred.</strong> The system is waiting entirely for your manual review. You can fix typos in the title and artist below, then click <strong>"Approve & Process"</strong> to prepare the YouTube video for playback.
             </p>
           </div>
 
@@ -577,7 +531,7 @@ export const AdminPipelineManager: React.FC = () => {
                         className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all active:scale-95 disabled:opacity-50"
                       >
                         <Upload className="w-4 h-4" />
-                        <span>{isProcessingThis ? 'Extracting & Uploading to Drive...' : 'Approve & Process Audio'}</span>
+                        <span>{isProcessingThis ? 'Checking video...' : 'Approve & Process Audio'}</span>
                       </button>
                     </div>
                   </div>
@@ -720,7 +674,7 @@ export const AdminPipelineManager: React.FC = () => {
                         <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
                           <span className="flex items-center gap-1.5 text-purple-300 font-bold">
                             <Radio className="w-3 h-3" />
-                            <span>{isThisPlaying ? 'Streaming from Google Drive...' : 'Ready for Audio Verification'}</span>
+                            <span>{isThisPlaying ? 'Playing...' : 'Ready for Audio Verification'}</span>
                           </span>
                           <span>
                             {activePlayingId === req.id ? formatSeconds(currentTime) : '0:00'} / {formatSeconds(audioDurationSec)}
@@ -770,7 +724,7 @@ export const AdminPipelineManager: React.FC = () => {
               <span>Published & Live on YouSong Library</span>
             </div>
             <p className="text-slate-300 leading-relaxed text-[11px]">
-              These songs have passed admin moderation, YouTube conversion, Google Drive storage, and audio staging verification. They are currently active on the public site library and playable by all listeners.
+              These songs have passed admin moderation, and staging verification. They are currently active on the public site library and playable by all listeners.
             </p>
           </div>
 
