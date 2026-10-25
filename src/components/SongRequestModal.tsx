@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { storage } from '../services/storage';
 import {
   X,
   Music,
@@ -15,6 +16,8 @@ import {
   Headphones,
   ExternalLink,
   Radio,
+  Lightbulb,
+  Bug,
 } from 'lucide-react';
 
 interface SongRequestModalProps {
@@ -45,8 +48,133 @@ const PRESET_COVERS = [
   },
 ];
 
+const BUG_AREAS = ['Library', 'Playlists', 'Favorites', 'Chat', 'Music player / video', 'Requests', 'Login / account', 'Admin panel', 'Other'];
+
+const FeedbackForm: React.FC<{ kind: 'feature' | 'bug' }> = ({ kind }) => {
+  const { currentUser } = useAuth();
+  const [title, setTitle] = useState('');
+  const [details, setDetails] = useState('');
+  const [area, setArea] = useState(BUG_AREAS[0]);
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const isBug = kind === 'bug';
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || !details.trim()) {
+      setNotice({ ok: false, text: 'Please fill in both the title and the details.' });
+      return;
+    }
+    setSending(true);
+    setNotice(null);
+    const res = await storage.submitFeedback({
+      type: kind,
+      title: title.trim(),
+      details: details.trim(),
+      area: isBug ? area : undefined,
+      userId: currentUser?.id,
+      username: currentUser?.username,
+    });
+    setSending(false);
+    if (res.success) {
+      setTitle('');
+      setDetails('');
+      setNotice({
+        ok: true,
+        text: isBug
+          ? 'Thanks! Your bug report was sent to the admins.'
+          : 'Thanks! Your feature idea was sent to the admins.',
+      });
+    } else {
+      setNotice({ ok: false, text: res.error || 'Something went wrong. Please try again.' });
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-cyan-500/20 text-xs text-slate-300">
+        {isBug
+          ? 'Something broken or acting weird? Tell us what happened and where. The more detail, the faster it can be fixed.'
+          : 'Have an idea that would make YouSong better? Describe it and an admin will take a look.'}
+      </div>
+
+      {notice && (
+        <div
+          className={`p-3 rounded-2xl border text-xs ${
+            notice.ok
+              ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
+              : 'bg-rose-500/15 border-rose-500/30 text-rose-200'
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
+
+      {isBug && (
+        <div>
+          <label className="block text-xs font-semibold text-slate-300 mb-1">Where did it happen?</label>
+          <select
+            value={area}
+            onChange={(e) => setArea(e.target.value)}
+            className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500"
+          >
+            {BUG_AREAS.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div>
+        <label className="block text-xs font-semibold text-slate-300 mb-1">
+          {isBug ? 'Short summary *' : 'Feature name *'}
+        </label>
+        <input
+          type="text"
+          maxLength={140}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder={isBug ? 'e.g. Chat messages will not send' : 'e.g. Add a sleep timer'}
+          className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+          required
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs font-semibold text-slate-300 mb-1">
+          {isBug ? 'What happened? What did you expect? *' : 'Describe the idea *'}
+        </label>
+        <textarea
+          rows={5}
+          maxLength={4000}
+          value={details}
+          onChange={(e) => setDetails(e.target.value)}
+          placeholder={
+            isBug
+              ? 'Steps: 1) I opened Chat  2) I typed a message  3) I pressed send. It said...'
+              : 'What should it do, and how would you use it?'
+          }
+          className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 resize-y"
+          required
+        />
+      </div>
+
+      <button
+        type="submit"
+        disabled={sending}
+        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-bold text-xs hover:from-cyan-400 hover:to-blue-500 disabled:opacity-60 transition-all"
+      >
+        <Send className="w-3.5 h-3.5" />
+        {sending ? 'Sending...' : isBug ? 'Send Bug Report' : 'Send Feature Idea'}
+      </button>
+    </form>
+  );
+};
+
 export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onClose }) => {
   const { currentUser, songRequests, submitSongRequest } = useAuth();
+  const [mode, setMode] = useState<'song' | 'feature' | 'bug'>('song');
   const [activeTab, setActiveTab] = useState<'submit' | 'my-requests'>('submit');
 
   // Form fields as requested:
@@ -116,14 +244,14 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-base sm:text-lg font-bold text-white font-display">
-                  YouSong Track Request
+                  YouSong Requests
                 </h3>
                 <span className="px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 text-[10px] font-semibold flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" /> Moderated
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                Submit a song request for human admin review & conversion to our Google Drive library.
+                Request a song, suggest a site feature, or report a bug.
               </p>
             </div>
           </div>
@@ -135,6 +263,33 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
           </button>
         </div>
 
+        {/* What do you want to send? */}
+        <div className="grid grid-cols-3 gap-2 mb-5 text-xs">
+          {([
+            { id: 'song', label: 'Song', Icon: Music },
+            { id: 'feature', label: 'Site Feature', Icon: Lightbulb },
+            { id: 'bug', label: 'Report a Bug', Icon: Bug },
+          ] as const).map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setMode(id)}
+              className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-semibold border transition-all ${
+                mode === id
+                  ? 'bg-cyan-500/15 border-cyan-400/50 text-cyan-200'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+
+        {mode !== 'song' ? (
+          <FeedbackForm key={mode} kind={mode} />
+        ) : (
+          <>
         {/* Tab Switcher */}
         <div className="flex p-1 rounded-2xl bg-slate-950 border border-slate-800 mb-5 text-xs">
           <button
@@ -180,7 +335,7 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
                 <span>Human Moderation & Holding Queue</span>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                Your request enters a private holding queue. It remains completely hidden from public users until the administrator reviews metadata, converts the audio via the pipeline, and manually publishes it.
+                Your request enters a private holding queue. It stays hidden from other users until an administrator reviews it and publishes it.
               </p>
             </div>
 
@@ -401,7 +556,7 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
                     {req.status === 'processing' && (
                       <span className="flex items-center gap-1 text-[10px] font-semibold text-cyan-300 bg-cyan-950/40 px-2.5 py-1 rounded-full border border-cyan-800/50 animate-pulse">
                         <Radio className="w-3 h-3" />
-                        Extracting & Converting
+                        Being Checked
                       </span>
                     )}
                     {req.status === 'staging' && (
@@ -427,6 +582,8 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
               ))
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>
