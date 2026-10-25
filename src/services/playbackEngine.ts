@@ -75,6 +75,15 @@ function errorMessageForCode(code: number | null): string {
 
 class YouTubeEngine {
   private wrapper: HTMLDivElement;
+  private videoBox: HTMLDivElement;
+  private sizeButton: HTMLButtonElement;
+  private hideButton: HTMLButtonElement;
+  private pill: HTMLButtonElement;
+  private backdrop: HTMLDivElement;
+  private enlarged = false;
+  private active = false; // a YouTube song is loaded
+  private hidden = false; // admin chose to hide the video box
+  private canHide = false; // only admins get the hide control
   private iframe: HTMLIFrameElement | null = null;
   private player: any = null;
   private readyPromise: Promise<void> | null = null;
@@ -93,23 +102,173 @@ class YouTubeEngine {
   private rate = 1;
 
   constructor() {
+    // Dim backdrop shown only while the video is enlarged
+    this.backdrop = document.createElement('div');
+    Object.assign(this.backdrop.style, {
+      position: 'fixed',
+      inset: '0',
+      background: 'rgba(2,6,23,0.7)',
+      zIndex: '59',
+      display: 'none',
+    } as Partial<CSSStyleDeclaration>);
+    this.backdrop.addEventListener('click', () => this.setEnlarged(false));
+    document.body.appendChild(this.backdrop);
+
     this.wrapper = document.createElement('div');
     this.wrapper.setAttribute('data-yousong-youtube', 'true');
-    Object.assign(this.wrapper.style, {
+    document.body.appendChild(this.wrapper);
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      height: '30px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '0 8px 0 12px',
+      background: 'rgba(15,23,42,0.97)',
+      color: '#cbd5e1',
+      font: '600 11px system-ui, sans-serif',
+    } as Partial<CSSStyleDeclaration>);
+    const label = document.createElement('span');
+    label.textContent = 'Playing from YouTube';
+    this.sizeButton = document.createElement('button');
+    this.sizeButton.type = 'button';
+    Object.assign(this.sizeButton.style, {
+      background: 'rgba(255,255,255,0.1)',
+      border: '1px solid rgba(255,255,255,0.18)',
+      color: '#fff',
+      borderRadius: '8px',
+      padding: '3px 10px',
+      font: '600 11px system-ui, sans-serif',
+      cursor: 'pointer',
+    } as Partial<CSSStyleDeclaration>);
+    this.sizeButton.addEventListener('click', () => this.setEnlarged(!this.enlarged));
+
+    this.hideButton = document.createElement('button');
+    this.hideButton.type = 'button';
+    this.hideButton.textContent = 'Hide';
+    this.hideButton.style.cssText = this.sizeButton.style.cssText + 'display:none;';
+    this.hideButton.addEventListener('click', () => this.setHidden(true));
+
+    const buttons = document.createElement('div');
+    Object.assign(buttons.style, { display: 'flex', gap: '6px' } as Partial<CSSStyleDeclaration>);
+    buttons.appendChild(this.hideButton);
+    buttons.appendChild(this.sizeButton);
+    header.appendChild(label);
+    header.appendChild(buttons);
+
+    // Small pill shown (admins only) while the video is hidden, to bring it back
+    this.pill = document.createElement('button');
+    this.pill.type = 'button';
+    this.pill.textContent = 'Show video';
+    this.pill.style.cssText =
+      'position:fixed;right:16px;bottom:120px;z-index:45;display:none;' +
+      'background:rgba(15,23,42,0.95);color:#fff;border:1px solid rgba(255,255,255,0.18);' +
+      'border-radius:999px;padding:6px 14px;font:600 11px system-ui,sans-serif;cursor:pointer;' +
+      'box-shadow:0 8px 24px rgba(0,0,0,0.45);';
+    this.pill.addEventListener('click', () => this.setHidden(false));
+    document.body.appendChild(this.pill);
+
+    try {
+      this.hidden = window.localStorage.getItem('yousong_hide_video') === '1';
+    } catch (_) {}
+
+    this.videoBox = document.createElement('div');
+    Object.assign(this.videoBox.style, {
+      position: 'relative',
+      width: '100%',
+      aspectRatio: '16 / 9',
+      minHeight: '200px',
+      background: '#000',
+    } as Partial<CSSStyleDeclaration>);
+
+    this.wrapper.appendChild(header);
+    this.wrapper.appendChild(this.videoBox);
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.enlarged) this.setEnlarged(false);
+    });
+
+    this.applyLayout();
+  }
+
+  private setEnlarged(value: boolean) {
+    this.enlarged = value;
+    this.applyLayout();
+  }
+
+  /** Admins only: whether the Hide / Show controls are available. */
+  setAdmin(isAdmin: boolean) {
+    this.canHide = isAdmin;
+    this.hideButton.style.display = isAdmin ? 'inline-block' : 'none';
+    this.applyLayout();
+  }
+
+  private setHidden(value: boolean) {
+    this.hidden = value;
+    if (value) this.enlarged = false;
+    try {
+      window.localStorage.setItem('yousong_hide_video', value ? '1' : '0');
+    } catch (_) {}
+    this.applyLayout();
+  }
+
+  private applyLayout() {
+    this.wrapper.style.display = this.active ? 'block' : 'none';
+    const isHidden = this.canHide && this.hidden;
+    this.pill.style.display = this.active && isHidden ? 'block' : 'none';
+    if (isHidden) {
+      // Keep the player rendered (so playback continues) but move it off screen
+      Object.assign(this.wrapper.style, {
+        position: 'fixed',
+        left: '-10000px',
+        top: '0',
+        right: 'auto',
+        bottom: 'auto',
+        transform: 'none',
+        width: '356px',
+        zIndex: '1',
+      });
+      this.backdrop.style.display = 'none';
+      return;
+    }
+    this.applyVisibleLayout();
+  }
+
+  private applyVisibleLayout() {
+    const base: Partial<CSSStyleDeclaration> = {
       position: 'fixed',
-      right: '16px',
-      bottom: '120px',
-      width: 'min(356px, calc(100vw - 32px))',
-      height: '200px',
-      zIndex: '45',
-      display: 'none',
       borderRadius: '16px',
       overflow: 'hidden',
       background: '#000',
       boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
       border: '1px solid rgba(255,255,255,0.12)',
-    } as Partial<CSSStyleDeclaration>);
-    document.body.appendChild(this.wrapper);
+    };
+    if (this.enlarged) {
+      Object.assign(this.wrapper.style, base, {
+        left: '50%',
+        top: '50%',
+        right: 'auto',
+        bottom: 'auto',
+        transform: 'translate(-50%, -50%)',
+        width: 'min(960px, 94vw)',
+        zIndex: '60',
+      });
+      this.backdrop.style.display = this.active ? 'block' : 'none';
+      this.sizeButton.textContent = 'Shrink';
+    } else {
+      Object.assign(this.wrapper.style, base, {
+        left: 'auto',
+        top: 'auto',
+        right: '16px',
+        bottom: '120px',
+        transform: 'none',
+        width: 'min(356px, calc(100vw - 16px))',
+        zIndex: '45',
+      });
+      this.backdrop.style.display = 'none';
+      this.sizeButton.textContent = 'Enlarge';
+    }
   }
 
   on(type: string, fn: Handler) {
@@ -155,7 +314,8 @@ class YouTubeEngine {
     this.errorCode = null;
     this.playing = false;
     this.needsLoad = this.iframe !== null; // later videos use loadVideoById
-    this.wrapper.style.display = 'block';
+    this.active = true;
+    this.applyLayout();
   }
 
   private ensurePlayer(): Promise<void> {
@@ -175,7 +335,7 @@ class YouTubeEngine {
           iframe.setAttribute('allowfullscreen', 'true');
           iframe.setAttribute('title', 'YouTube video player');
           iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-          this.wrapper.appendChild(iframe);
+          this.videoBox.appendChild(iframe);
           this.iframe = iframe;
           this.needsLoad = false; // the first video is already in the iframe URL
 
@@ -280,7 +440,9 @@ class YouTubeEngine {
     this.playing = false;
     this.videoId = null;
     try { this.player?.stopVideo?.(); } catch (_) {}
-    this.wrapper.style.display = 'none';
+    this.enlarged = false;
+    this.active = false;
+    this.applyLayout();
   }
 
   get currentTime(): number {
@@ -301,6 +463,8 @@ class YouTubeEngine {
     this.stopPolling();
     try { this.player?.destroy?.(); } catch (_) {}
     this.wrapper.remove();
+    this.backdrop.remove();
+    this.pill.remove();
     this.player = null;
     this.iframe = null;
     this.readyPromise = null;
@@ -311,6 +475,7 @@ export class PlaybackRouter {
   private native: HTMLAudioElement;
   private yt: YouTubeEngine | null = null;
   private mode: 'native' | 'youtube' = 'native';
+  private adminControls = false;
   private listeners = new Map<string, Set<Handler>>();
 
   private _volume = 0.85;
@@ -342,6 +507,7 @@ export class PlaybackRouter {
           this.emit(type);
         });
       });
+      engine.setAdmin(this.adminControls);
       this.yt = engine;
     }
     return this.yt;
@@ -358,6 +524,12 @@ export class PlaybackRouter {
 
   removeEventListener(type: string, fn: Handler) {
     this.listeners.get(type)?.delete(fn);
+  }
+
+  /** Admins get the Hide / Show video control. */
+  setAdminControls(isAdmin: boolean) {
+    this.adminControls = isAdmin;
+    this.yt?.setAdmin(isAdmin);
   }
 
   get isYouTube(): boolean {
