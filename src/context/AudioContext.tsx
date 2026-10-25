@@ -164,6 +164,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, []);
 
+  // Only admins get the Hide / Show video control
+  useEffect(() => {
+    audioRef.current?.setAdminControls(currentUser?.role === 'admin');
+  }, [currentUser]);
+
   // Sync user data & subscribe to database changes
   useEffect(() => {
     const handleSync = () => {
