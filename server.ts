@@ -101,6 +101,8 @@ import {
   getActiveConnectionString,
   checkSqlAvailability,
   getDatabaseHealth,
+  createPool,
+  clearDbError,
 } from './src/db/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2476,6 +2478,87 @@ app.delete('/api/chat/pairing-blocks/:id', async (req: Request, res: Response) =
   }
 });
 
+// ----------------- DATABASE SAVE TEST (admin) -----------------
+// Actually saves, reads back and deletes a test song / account / setting using the app's own
+// code, and checks the rows really landed in the database (not in the temporary local store).
+app.post('/api/admin/database/self-test', async (_req: Request, res: Response) => {
+  const results: Array<{ name: string; ok: boolean; error?: string }> = [];
+  const connected = await checkSqlAvailability();
+  results.push({
+    name: 'Connected to the database',
+    ok: connected,
+    error: connected ? undefined : getDatabaseHealth().lastError || 'Not connected',
+  });
+  if (!connected) return res.json({ ok: false, results });
+
+  const pool = createPool();
+  const stamp = Date.now();
+  const check = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+      results.push({ name, ok: true });
+    } catch (e: any) {
+      const root = e?.cause || e;
+      results.push({ name, ok: false, error: String(root?.message || e).slice(0, 300) });
+    }
+  };
+
+  await check('All tables exist', async () => {
+    for (const t of ['users', 'songs', 'popups', 'song_requests', 'system_settings', 'chat_requests', 'chat_threads', 'chat_messages']) {
+      await pool.query(`SELECT 1 FROM ${t} LIMIT 1`);
+    }
+  });
+
+  const songId = `selftest-song-${stamp}`;
+  await check('Saving a song', async () => {
+    await insertSongDb({
+      id: songId,
+      title: 'Save test',
+      artist: 'System',
+      genre: 'Test',
+      duration: 1,
+      audioUrl: 'youtube:aaaaaaaaaaa',
+      coverUrl: 'https://example.com/x.jpg',
+      addedAt: new Date().toISOString(),
+    });
+    const r = await pool.query('SELECT id FROM songs WHERE id = $1', [songId]);
+    if (!r.rowCount) {
+      throw new Error(`The song was NOT stored in the database. ${getDatabaseHealth().lastDbError?.message || ''}`.trim());
+    }
+  });
+  try { await deleteSongDb(songId); } catch (_) {}
+
+  const userId = `selftest-user-${stamp}`;
+  await check('Saving an account', async () => {
+    await createUserDb({
+      uid: userId,
+      username: `selftest_${stamp}`,
+      passwordHash: 'x',
+      role: 'user',
+      isApproved: false,
+      note: 'database save test',
+    });
+    const r = await pool.query('SELECT uid FROM users WHERE uid = $1', [userId]);
+    if (!r.rowCount) {
+      throw new Error(`The account was NOT stored in the database. ${getDatabaseHealth().lastDbError?.message || ''}`.trim());
+    }
+  });
+  try { await deleteUserDb(userId); } catch (_) {}
+
+  await check('Saving a site setting (banner, maintenance, announcements)', async () => {
+    await setSettingDb('selftest', { at: stamp });
+    const r = await pool.query('SELECT key FROM system_settings WHERE key = $1', ['selftest']);
+    if (!r.rowCount) {
+      throw new Error(`The setting was NOT stored in the database. ${getDatabaseHealth().lastDbError?.message || ''}`.trim());
+    }
+    await pool.query('DELETE FROM system_settings WHERE key = $1', ['selftest']);
+  });
+
+  const allOk = results.every((r) => r.ok);
+  if (allOk) clearDbError();
+  res.json({ ok: allOk, results });
+});
+
 // ----------------- YOUTUBE LINK CHECK -----------------
 // Tells the person (or admin) right away whether a pasted link will work
 app.get('/api/youtube/preview', async (req: Request, res: Response) => {
@@ -2668,6 +2751,7 @@ app.get('/api/admin/database/status', async (_req: Request, res: Response) => {
       persistent: isSql,
       connectionSource: getDatabaseHealth().source,
       lastError: isSql ? null : getDatabaseHealth().lastError,
+      lastDbError: getDatabaseHealth().lastDbError,
       configuredConnectionString: maskedConn,
       supabaseUrl: process.env.SUPABASE_URL || null,
       hasCredentials: Boolean(connStr || process.env.SUPABASE_URL),
