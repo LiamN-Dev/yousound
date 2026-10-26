@@ -846,22 +846,6 @@ export async function getMediaFileDb(id: string) {
 }
 
 // ----------------- CHAT SYSTEM QUERIES -----------------
-export async function getChatRequestByIdDb(id: string) {
-  if (!(await checkSqlAvailability())) {
-    return localStore.getChatRequestById?.(id) || null;
-  }
-  try {
-    const rows = await db
-      .select()
-      .from(chatRequests)
-      .where(eq(chatRequests.id, id))
-      .limit(1);
-    return rows[0] || localStore.getChatRequestById?.(id) || null;
-  } catch (error) {
-    return localStore.getChatRequestById?.(id) || null;
-  }
-}
-
 export async function getChatRequestsDb() {
   if (!(await checkSqlAvailability())) return localStore.getChatRequests();
   try {
@@ -884,6 +868,11 @@ export async function getChatRequestsForUserDb(userId: string) {
   }
 }
 
+export async function getChatRequestByIdDb(id: string) {
+  const all = await getChatRequestsDb();
+  return (all as any[]).find((r) => r.id === id) || null;
+}
+
 export async function createChatRequestDb(data: {
   id: string;
   senderId: string;
@@ -892,7 +881,6 @@ export async function createChatRequestDb(data: {
   receiverUsername: string;
   reason?: string;
 }) {
-  localStore.createChatRequest(data);
   if (!(await checkSqlAvailability())) return localStore.createChatRequest(data);
   try {
     const inserted = await db
@@ -991,7 +979,7 @@ export async function hideChatThreadForUserDb(threadId: string, userId: string) 
 }
 
 export async function createOrGetAppealThreadDb(userId: string, username: string) {
-  return localStore.createOrForceChatThread(userId, username, 'admin', 'Administrator', true);
+  return createOrForceChatThreadDb(userId, username, 'admin', 'Administrator', true);
 }
 
 export async function getChatThreadByIdDb(threadId: string) {
@@ -1011,7 +999,46 @@ export async function createOrForceChatThreadDb(
   user2Username: string,
   isAppeal: boolean = false
 ) {
-  return localStore.createOrForceChatThread(user1Id, user1Username, user2Id, user2Username, isAppeal);
+  const threadId = isAppeal
+    ? `appeal-${user1Id}-${user2Id}`
+    : `thread-${[user1Id, user2Id].sort().join('-')}`;
+
+  if (!(await checkSqlAvailability())) {
+    return localStore.createOrForceChatThread(user1Id, user1Username, user2Id, user2Username, isAppeal);
+  }
+  try {
+    const existing = await db.select().from(chatThreads).where(eq(chatThreads.id, threadId)).limit(1);
+    if (existing[0]) {
+      // Re-start: make sure a previously hidden thread shows up again
+      if ((existing[0].hiddenByUserIds || []).length > 0) {
+        const updated = await db
+          .update(chatThreads)
+          .set({ hiddenByUserIds: [] })
+          .where(eq(chatThreads.id, threadId))
+          .returning();
+        return updated[0] || existing[0];
+      }
+      return existing[0];
+    }
+    const inserted = await db
+      .insert(chatThreads)
+      .values({
+        id: threadId,
+        user1Id,
+        user1Username,
+        user2Id,
+        user2Username,
+        isApproved: true,
+        isTerminated: false,
+        hiddenByUserIds: [],
+        isAppealThread: isAppeal,
+      })
+      .returning();
+    return inserted[0];
+  } catch (err) {
+    console.error('[Chat] createOrForceChatThreadDb failed, using local store:', err);
+    return localStore.createOrForceChatThread(user1Id, user1Username, user2Id, user2Username, isAppeal);
+  }
 }
 
 export async function setChatThreadTerminatedDb(
@@ -1019,23 +1046,66 @@ export async function setChatThreadTerminatedDb(
   isTerminated: boolean,
   reason?: string
 ) {
-  return localStore.setChatThreadTerminated(threadId, isTerminated, reason);
+  if (!(await checkSqlAvailability())) {
+    return localStore.setChatThreadTerminated(threadId, isTerminated, reason);
+  }
+  try {
+    const patch: any = { isTerminated };
+    if (reason !== undefined) patch.terminatedReason = reason;
+    else if (!isTerminated) patch.terminatedReason = null;
+    const updated = await db.update(chatThreads).set(patch).where(eq(chatThreads.id, threadId)).returning();
+    return updated[0] || localStore.setChatThreadTerminated(threadId, isTerminated, reason);
+  } catch (err) {
+    console.error('[Chat] setChatThreadTerminatedDb failed:', err);
+    return localStore.setChatThreadTerminated(threadId, isTerminated, reason);
+  }
 }
 
 export async function deleteChatThreadDb(threadId: string) {
-  return localStore.deleteChatThread(threadId);
+  localStore.deleteChatThread(threadId);
+  if (!(await checkSqlAvailability())) return true;
+  try {
+    await db.delete(chatMessages).where(eq(chatMessages.threadId, threadId));
+    await db.delete(chatThreads).where(eq(chatThreads.id, threadId));
+  } catch (err) {
+    console.error('[Chat] deleteChatThreadDb failed:', err);
+  }
+  return true;
 }
 
 export async function deleteChatMessageDb(messageId: string) {
-  return localStore.deleteChatMessage(messageId);
+  localStore.deleteChatMessage(messageId);
+  if (!(await checkSqlAvailability())) return true;
+  try {
+    await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
+  } catch (err) {
+    console.error('[Chat] deleteChatMessageDb failed:', err);
+  }
+  return true;
 }
 
 export async function getChatMessagesDb(threadId: string) {
-  return localStore.getChatMessages(threadId);
+  if (!(await checkSqlAvailability())) return localStore.getChatMessages(threadId);
+  try {
+    return await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.threadId, threadId))
+      .orderBy(asc(chatMessages.createdAt));
+  } catch (err) {
+    console.error('[Chat] getChatMessagesDb failed:', err);
+    return localStore.getChatMessages(threadId);
+  }
 }
 
 export async function getAllChatMessagesDb(limitCount: number = 200) {
-  return localStore.getAllChatMessages(limitCount);
+  if (!(await checkSqlAvailability())) return localStore.getAllChatMessages(limitCount);
+  try {
+    return await db.select().from(chatMessages).orderBy(desc(chatMessages.createdAt)).limit(limitCount);
+  } catch (err) {
+    console.error('[Chat] getAllChatMessagesDb failed:', err);
+    return localStore.getAllChatMessages(limitCount);
+  }
 }
 
 export async function createChatMessageDb(data: {
@@ -1046,11 +1116,48 @@ export async function createChatMessageDb(data: {
   receiverId: string;
   content: string;
 }) {
-  return localStore.createChatMessage(data);
+  if (!(await checkSqlAvailability())) return localStore.createChatMessage(data);
+  try {
+    const now = new Date();
+    const inserted = await db
+      .insert(chatMessages)
+      .values({
+        id: data.id,
+        threadId: data.threadId,
+        senderId: data.senderId,
+        senderUsername: data.senderUsername,
+        receiverId: data.receiverId || '',
+        content: data.content,
+        createdAt: now,
+      })
+      .returning();
+
+    // Keep the conversation list preview fresh and bring hidden threads back
+    await db
+      .update(chatThreads)
+      .set({
+        lastMessage: data.content,
+        lastMessageSender: data.senderUsername,
+        lastMessageAt: now,
+        hiddenByUserIds: [],
+      })
+      .where(eq(chatThreads.id, data.threadId));
+
+    return inserted[0];
+  } catch (err) {
+    console.error('[Chat] createChatMessageDb failed:', err);
+    throw err;
+  }
 }
 
 export async function getChatPairingBlocksDb() {
-  return localStore.getChatPairingBlocks();
+  if (!(await checkSqlAvailability())) return localStore.getChatPairingBlocks();
+  try {
+    return await db.select().from(chatPairingBlocks).orderBy(desc(chatPairingBlocks.createdAt));
+  } catch (err) {
+    console.error('[Chat] getChatPairingBlocksDb failed:', err);
+    return localStore.getChatPairingBlocks();
+  }
 }
 
 export async function createChatPairingBlockDb(
@@ -1059,13 +1166,48 @@ export async function createChatPairingBlockDb(
   blockedBy: string,
   reason?: string
 ) {
-  return localStore.createChatPairingBlock(user1Id, user2Id, blockedBy, reason);
+  if (!(await checkSqlAvailability())) {
+    return localStore.createChatPairingBlock(user1Id, user2Id, blockedBy, reason);
+  }
+  try {
+    const inserted = await db
+      .insert(chatPairingBlocks)
+      .values({ user1Id, user2Id, blockedBy, reason: reason || null })
+      .returning();
+    return inserted[0];
+  } catch (err) {
+    console.error('[Chat] createChatPairingBlockDb failed:', err);
+    return localStore.createChatPairingBlock(user1Id, user2Id, blockedBy, reason);
+  }
 }
 
 export async function deleteChatPairingBlockDb(id: number) {
-  return localStore.deleteChatPairingBlock(id);
+  if (!(await checkSqlAvailability())) return localStore.deleteChatPairingBlock(id);
+  try {
+    await db.delete(chatPairingBlocks).where(eq(chatPairingBlocks.id, id));
+    return true;
+  } catch (err) {
+    console.error('[Chat] deleteChatPairingBlockDb failed:', err);
+    return localStore.deleteChatPairingBlock(id);
+  }
 }
 
 export async function isChatPairingBlockedDb(user1Id: string, user2Id: string) {
-  return localStore.isChatPairingBlocked(user1Id, user2Id);
+  if (!(await checkSqlAvailability())) return localStore.isChatPairingBlocked(user1Id, user2Id);
+  try {
+    const rows = await db
+      .select()
+      .from(chatPairingBlocks)
+      .where(
+        or(
+          and(eq(chatPairingBlocks.user1Id, user1Id), eq(chatPairingBlocks.user2Id, user2Id)),
+          and(eq(chatPairingBlocks.user1Id, user2Id), eq(chatPairingBlocks.user2Id, user1Id))
+        )
+      )
+      .limit(1);
+    return rows.length > 0;
+  } catch (err) {
+    console.error('[Chat] isChatPairingBlockedDb failed:', err);
+    return localStore.isChatPairingBlocked(user1Id, user2Id);
+  }
 }
