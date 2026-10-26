@@ -68,9 +68,9 @@ import {
   bulkUpdateSongsDb,
   bulkDeleteSongsDb,
   initDatabaseSchemaExtensions,
-} from './src/db/queries.ts';
-import { seedDatabaseIfEmpty } from './src/db/seed.ts';
-import { ensureTables } from './src/db/ensureTables.ts';
+} from './db/queries';
+import { seedDatabaseIfEmpty } from './db/seed';
+import { ensureTables } from './db/ensureTables';
 import {
   attachUser,
   enforcePolicy,
@@ -83,25 +83,25 @@ import {
   loginBlocked,
   noteLoginFailure,
   clearLoginFailures,
-} from './src/services/auth.ts';
+} from './services/auth';
 import {
   createFeedbackDb,
   listFeedbackDb,
   updateFeedbackDb,
   deleteFeedbackDb,
-} from './src/db/feedback.ts';
+} from './db/feedback';
 import { extractAudioFromYouTube, uploadMp3ToGoogleDrive } from './src/services/audioPipeline.ts';
 import {
   generateSupabaseMigrationSql,
   testSupabaseDbConnection,
   syncLocalDataToSupabase,
-} from './src/services/supabaseMigration.ts';
+} from './services/supabaseMigration';
 import {
   setSupabaseConnectionString,
   getActiveConnectionString,
   checkSqlAvailability,
   getDatabaseHealth,
-} from './src/db/index.ts';
+} from './db/index';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
