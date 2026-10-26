@@ -39,7 +39,7 @@ export const getPoolConfig = (): PoolConfig => {
         rejectUnauthorized: false,
       },
       max: 10,
-      connectionTimeoutMillis: 3000,
+      connectionTimeoutMillis: 8000,
     };
   }
 
@@ -53,33 +53,86 @@ export const getPoolConfig = (): PoolConfig => {
   };
 };
 
-export const checkSqlAvailability = async (): Promise<boolean> => {
-  if (isChecked) return isAvailable;
+let lastError: string | null = null;
+let lastCheckAt = 0;
+let checkInFlight: Promise<boolean> | null = null;
+const RECHECK_MS = 30_000;
 
+const hasConfig = (): boolean => {
   const config = getPoolConfig();
-  if (!config.connectionString && (!config.host || !config.user)) {
-    isChecked = true;
-    isAvailable = false;
-    return false;
-  }
+  return Boolean(config.connectionString || (config.host && config.user));
+};
 
-  const testPool = new Pool(config);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function tryConnectOnce(): Promise<boolean> {
+  const testPool = new Pool(getPoolConfig());
   try {
     await testPool.query('SELECT 1');
-    isAvailable = true;
-    console.log('[Database] Successfully connected to PostgreSQL / Supabase!');
+    lastError = null;
+    return true;
   } catch (err: any) {
-    isAvailable = false;
+    lastError = err?.message || String(err);
+    return false;
   } finally {
     try {
       await testPool.end();
     } catch (_) {}
+  }
+}
+
+/**
+ * Is the SQL database reachable?
+ * - Retries a few times on the first check (databases can be slow to wake up on deploy).
+ * - After a failure it checks again every 30 seconds instead of staying on the temporary
+ *   local store until the next restart.
+ */
+export const checkSqlAvailability = async (): Promise<boolean> => {
+  if (!hasConfig()) {
     isChecked = true;
+    isAvailable = false;
+    lastError = 'No database connection string is set (DATABASE_URL is missing).';
+    return false;
   }
 
-  return isAvailable;
+  if (isChecked && (isAvailable || Date.now() - lastCheckAt < RECHECK_MS)) return isAvailable;
+  if (checkInFlight) return checkInFlight;
+
+  const firstEver = !isChecked;
+  checkInFlight = (async () => {
+    const attempts = firstEver ? 3 : 1;
+    let ok = false;
+    for (let i = 0; i < attempts && !ok; i++) {
+      ok = await tryConnectOnce();
+      if (!ok && i < attempts - 1) await sleep(2000);
+    }
+    const wasAvailable = isAvailable;
+    isAvailable = ok;
+    isChecked = true;
+    lastCheckAt = Date.now();
+    if (ok && !wasAvailable) {
+      console.log('[Database] Successfully connected to PostgreSQL / Supabase!');
+    } else if (!ok) {
+      console.error(`[Database] Could not connect: ${lastError}. Data will NOT be saved permanently until this is fixed.`);
+    }
+    return ok;
+  })().finally(() => {
+    checkInFlight = null;
+  });
+
+  return checkInFlight;
 };
+
+export const getDatabaseHealth = () => ({
+  configured: hasConfig(),
+  connected: isAvailable,
+  lastError,
+  source: (process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL
+    ? 'env'
+    : activeConnectionString
+      ? 'admin-panel'
+      : 'none') as 'env' | 'admin-panel' | 'none',
+});
 
 export const getSqlAvailabilitySync = (): boolean => {
   return isAvailable;
