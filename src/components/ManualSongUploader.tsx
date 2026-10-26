@@ -28,6 +28,7 @@ import {
   FolderOpen,
   ExternalLink,
   Film,
+  AlertCircle,
 } from 'lucide-react';
 import { MediaCover } from './MediaCover';
 import { formatCoverMediaUrl } from '../utils/mediaUrl';
@@ -49,7 +50,7 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
   const { addNewSong, playSong, allSongs, clearAllSongs } = useAudio();
 
   // Mode: 'gdrive' (pull from Google Drive or Cloud), 'url' (pull from direct link), 'catalog' (online presets), 'file' (upload local audio file)
-  const [activeTab, setActiveTab] = useState<'gdrive' | 'url' | 'catalog' | 'file'>('gdrive');
+  const [activeTab, setActiveTab] = useState<'youtube' | 'link'>('youtube');
 
   // Form Fields (fully editable by user on the website)
   const [title, setTitle] = useState('');
@@ -64,6 +65,17 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
   const [coverUrl, setCoverUrl] = useState(COVER_PRESETS[0].url);
   const [customCoverUrl, setCustomCoverUrl] = useState('');
   const [coverType, setCoverType] = useState<'preset' | 'url' | 'file' | 'gradient'>('preset');
+
+  // YouTube link
+  const [ytInput, setYtInput] = useState('');
+  const [ytInfo, setYtInfo] = useState<{ videoId: string; title: string; author: string; thumbnail: string; checked: boolean } | null>(null);
+  const [ytProblem, setYtProblem] = useState<string | null>(null);
+  const [hideVideo, setHideVideo] = useState(false);
+
+  // Audio / Google Drive link (verified before it can be published)
+  const [linkInput, setLinkInput] = useState('');
+  const [linkResult, setLinkResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // Google Drive & Cloud Inputs
   const [gdriveInput, setGdriveInput] = useState('');
@@ -91,6 +103,134 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const coverInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Check that a link really plays as audio in the browser
+  const verifyAudioLink = (url: string): Promise<{ ok: boolean; duration?: number }> =>
+    new Promise((resolve) => {
+      const a = new Audio();
+      a.preload = 'metadata';
+      let finished = false;
+      const finish = (r: { ok: boolean; duration?: number }) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        a.onloadedmetadata = null;
+        a.onerror = null;
+        try { a.src = ''; } catch {}
+        resolve(r);
+      };
+      const timer = setTimeout(() => finish({ ok: false }), 15000);
+      a.onloadedmetadata = () =>
+        finish({ ok: true, duration: isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration) : undefined });
+      a.onerror = () => finish({ ok: false });
+      a.src = url;
+    });
+
+  // YouTube: pull title, channel and thumbnail, and confirm the video can be embedded
+  const analyzeYouTube = async (raw: string) => {
+    const text = raw.trim();
+    if (!text) {
+      setYtProblem('Paste a YouTube link first.');
+      return;
+    }
+    setIsAnalyzing(true);
+    setYtProblem(null);
+    setYtInfo(null);
+    setAudioUrl('');
+    stopPreview();
+    try {
+      const r = await storage.previewYouTube(text);
+      if (!r.valid || !r.videoId) {
+        setYtProblem(r.reason || 'This link cannot be used.');
+        return;
+      }
+      setYtInfo({
+        videoId: r.videoId,
+        title: r.title || '',
+        author: r.author || '',
+        thumbnail: r.thumbnail || `https://i.ytimg.com/vi/${r.videoId}/hqdefault.jpg`,
+        checked: !!r.checked,
+      });
+      setAudioUrl(`youtube:${r.videoId}`);
+      if (r.title) setTitle(r.title);
+      if (r.author) setArtist(r.author);
+      setDuration(180); // the real length is measured the first time the song plays
+      const thumb = r.thumbnail || `https://i.ytimg.com/vi/${r.videoId}/hqdefault.jpg`;
+      setCoverUrl(thumb);
+      setCustomCoverUrl(thumb);
+      setCoverType('url');
+      setFeedback('✓ YouTube video found. Check the title and artist below, then click Publish.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Audio / Drive link: only accepted once the browser can actually play it
+  const analyzeLink = async () => {
+    const raw = linkInput.trim();
+    setLinkResult(null);
+    if (!raw) {
+      setLinkResult({ ok: false, text: 'Paste a link first.' });
+      return;
+    }
+    if (/youtube\.com|youtu\.be/i.test(raw)) {
+      setActiveTab('youtube');
+      setYtInput(raw);
+      setFeedback('That is a YouTube link, so it was moved to the YouTube tab.');
+      await analyzeYouTube(raw);
+      return;
+    }
+    if (!/^https?:\/\//i.test(raw)) {
+      setLinkResult({ ok: false, text: 'The link must start with https://' });
+      return;
+    }
+    if (/spotify\.com|soundcloud\.com|music\.apple\.com|deezer\.com|tidal\.com|pandora\.com/i.test(raw)) {
+      setLinkResult({
+        ok: false,
+        text: 'Streaming-service links (Spotify, SoundCloud, Apple Music...) cannot be played here. Use the YouTube tab, or a direct audio file link.',
+      });
+      return;
+    }
+    if (/drive\.google\.com\/(drive\/folders|folderview)/i.test(raw)) {
+      setLinkResult({ ok: false, text: 'That is a Google Drive folder. Open the audio file itself and copy ITS share link.' });
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAudioUrl('');
+    stopPreview();
+    try {
+      const parsed = storage.parseCloudAudioUrl(raw);
+      const check = await verifyAudioLink(parsed.streamUrl);
+      if (!check.ok) {
+        setLinkResult({
+          ok: false,
+          text:
+            parsed.service === 'gdrive'
+              ? 'Google Drive would not stream this file. Set sharing to "Anyone with the link" and use a smaller audio file (large files are blocked by Google).'
+              : 'This link did not play as audio. It must point straight to an audio file (.mp3, .m4a, .wav, .ogg). Web pages, folders and download pages do not work.',
+        });
+        return;
+      }
+      setAudioUrl(parsed.streamUrl);
+      if (check.duration) setDuration(check.duration);
+      if (!title.trim()) {
+        try {
+          const name = decodeURIComponent(new URL(raw).pathname.split('/').pop() || '').replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+          setTitle(parsed.service === 'gdrive' ? 'Drive Audio Track' : name || 'Audio Track');
+        } catch {
+          setTitle('Audio Track');
+        }
+      }
+      if (!artist.trim()) setArtist(parsed.service === 'gdrive' ? 'Cloud Stream' : 'Online Stream');
+      setLinkResult({
+        ok: true,
+        text: `✓ Plays correctly${check.duration ? ` (${Math.floor(check.duration / 60)}:${String(check.duration % 60).padStart(2, '0')} long)` : ''}. Edit the details below, then click Publish.`,
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   // Pull Track from Google Drive or 3rd-Party Cloud Storage
   const handlePullFromGdrive = async () => {
@@ -344,6 +484,10 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
 
   const togglePreview = () => {
     if (!audioUrl) return;
+    if (audioUrl.startsWith('youtube:')) {
+      setFeedback('YouTube songs play in the main player after you publish. The video box appears in the corner.');
+      return;
+    }
 
     if (previewPlaying && previewAudioRef.current) {
       previewAudioRef.current.pause();
@@ -399,7 +543,7 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
         album: album.trim() || 'Single',
         typeMood: typeMood.trim() || undefined,
         duration: Number(duration) || 180,
-        audioUrl: audioUrl,
+        audioUrl: audioUrl.startsWith('youtube:') && hideVideo && !audioUrl.endsWith(':hidden') ? `${audioUrl}:hidden` : audioUrl,
         coverUrl: finalCover,
         description: description.trim() || undefined,
         featured: true,
@@ -414,6 +558,12 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
       setTypeMood('');
       setAudioUrl('');
       setUrlInput('');
+      setYtInput('');
+      setYtInfo(null);
+      setYtProblem(null);
+      setLinkInput('');
+      setLinkResult(null);
+      setHideVideo(false);
       setUploadedAudioName(null);
       setDescription('');
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -462,7 +612,7 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Pull tracks from our online catalog, import web audio links, or upload MP3 files with full author & tag editing.
+              Add a song from a YouTube link or from a verified audio link, with full author & tag editing.
             </p>
           </div>
         </div>
@@ -499,292 +649,152 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
       )}
 
       {/* Main Mode Tabs */}
-      <div className="flex flex-wrap p-1 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/60 mb-5 text-xs gap-1">
+      <div className="flex flex-wrap p-1 rounded-2xl bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 mb-5 text-xs gap-1">
         <button
           type="button"
-          onClick={() => setActiveTab('gdrive')}
+          onClick={() => setActiveTab('youtube')}
           className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition-all ${
-            activeTab === 'gdrive'
+            activeTab === 'youtube'
               ? 'bg-blue-600 text-white shadow-xs'
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
-          <Cloud className="w-3.5 h-3.5 text-amber-300" />
-          <span>Google Drive & Cloud Link</span>
+          <Play className="w-3.5 h-3.5" />
+          <span>YouTube Link</span>
         </button>
-
         <button
           type="button"
-          onClick={() => setActiveTab('url')}
+          onClick={() => setActiveTab('link')}
           className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition-all ${
-            activeTab === 'url'
+            activeTab === 'link'
               ? 'bg-blue-600 text-white shadow-xs'
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
           <LinkIcon className="w-3.5 h-3.5" />
-          <span>Import Web / Stream URL</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('catalog')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition-all ${
-            activeTab === 'catalog'
-              ? 'bg-blue-600 text-white shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-          }`}
-        >
-          <Radio className="w-3.5 h-3.5" />
-          <span>Curated Streams Catalog ({ONLINE_CATALOG.length})</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('file')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition-all ${
-            activeTab === 'file'
-              ? 'bg-blue-600 text-white shadow-xs'
-              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-          }`}
-        >
-          <FileAudio className="w-3.5 h-3.5" />
-          <span>Upload Local File</span>
+          <span>Audio / Google Drive Link</span>
         </button>
       </div>
 
-      {/* Tab: Google Drive & Cloud Importer */}
-      {activeTab === 'gdrive' && (
-        <div className="mb-6 p-5 rounded-2xl bg-gradient-to-b from-blue-50/70 to-slate-50 dark:from-blue-950/20 dark:to-slate-900/60 border border-blue-200/80 dark:border-blue-900/40">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-            <div>
-              <h4 className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Cloud className="w-4 h-4 text-blue-500" />
-                <span>Pull from Google Drive, Dropbox, or OneDrive</span>
-              </h4>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                Paste any shared Google Drive file link. We'll connect the audio stream instantly and let you edit author, tags, title, and cover art below!
-              </p>
-            </div>
-            <span className="text-[10px] font-mono font-semibold px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40 w-fit">
-              ✓ Direct Audio Proxy
-            </span>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                type="url"
-                placeholder="https://drive.google.com/file/d/1A2B3C.../view?usp=sharing"
-                value={gdriveInput}
-                onChange={(e) => setGdriveInput(e.target.value)}
-                className="flex-1 px-3.5 py-2.5 text-xs rounded-xl bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white font-mono text-[11px] focus:outline-none focus:border-blue-500 shadow-inner"
-              />
-              <div className="flex gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={handlePullFromGdrive}
-                  disabled={isPullingGdrive}
-                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
-                >
-                  <Wand2 className="w-3.5 h-3.5" />
-                  <span>{isPullingGdrive ? 'Connecting...' : 'Pull & Stream'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleArchiveGdriveToDb}
-                  disabled={isArchivingToDb}
-                  title="Download from Google Drive and save permanently"
-                  className="px-3.5 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
-                >
-                  <DownloadCloud className="w-3.5 h-3.5" />
-                  <span>{isArchivingToDb ? 'Archiving...' : 'Save to DB'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Step-by-Step Google Drive Instructions */}
-            <div className="p-3 rounded-xl bg-white/70 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800/80 text-[11px] text-slate-600 dark:text-slate-400 space-y-1">
-              <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
-                <FolderOpen className="w-3 h-3 text-blue-500" />
-                How to get your Google Drive link:
-              </span>
-              <ol className="list-decimal list-inside space-y-0.5 text-[10.5px] leading-relaxed pl-1">
-                <li>In Google Drive, right-click your MP3 or audio file → click <strong>Share</strong> → <strong>Share</strong>.</li>
-                <li>Under <strong>General access</strong>, change it from Restricted to <strong>"Anyone with the link"</strong>.</li>
-                <li>Click <strong>Copy link</strong>, paste it into the box above, and click <strong>Pull & Stream</strong>!</li>
-              </ol>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 1: Online Stream Catalog Browser */}
-      {activeTab === 'catalog' && (
-        <div className="mb-6 p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h4 className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-blue-500" />
-                Curated Online Streams Catalog
-              </h4>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Click "Pull Track" on any stream below. It auto-fills the editor where you can customize the author, tags, title, and album!
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-72 overflow-y-auto pr-1">
-            {ONLINE_CATALOG.map((track) => (
-              <div
-                key={track.id}
-                className="p-2.5 rounded-xl bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 hover:border-blue-400 dark:hover:border-blue-500/50 transition-colors group"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <img
-                    src={track.coverUrl}
-                    alt={track.title}
-                    className="w-10 h-10 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
-                    onError={(e) => handleImageFallback(e, track.title, track.genre)}
-                  />
-                  <div className="min-w-0">
-                    <h5 className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                      {track.title}
-                    </h5>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                      {track.artist} · <span className="text-blue-600 dark:text-blue-400 font-medium">{track.genre}</span>
-                    </p>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handlePullFromCatalog(track)}
-                  className="px-2.5 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-600/20 hover:bg-blue-600 hover:text-white text-blue-700 dark:text-blue-300 text-[11px] font-semibold transition-all shrink-0 active:scale-95 border border-blue-200 dark:border-blue-500/30"
-                >
-                  Pull Track
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Tab 2: Web URL Puller */}
-      {activeTab === 'url' && (
-        <div className="mb-6 p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-            Paste Direct Audio / Web Stream URL (MP3, WAV, AAC, Archive.org, or online stream)
+      {/* Tab: YouTube */}
+      {activeTab === 'youtube' && (
+        <div className="mb-6 p-5 rounded-2xl bg-gradient-to-b from-rose-50/60 to-slate-50 dark:from-rose-950/20 dark:to-slate-900/60 border border-rose-200/70 dark:border-rose-900/40 space-y-3">
+          <label className="block text-xs font-semibold text-slate-800 dark:text-slate-200">
+            Paste a YouTube video link
           </label>
-          <div className="flex gap-2 mb-2.5">
+          <div className="flex flex-col sm:flex-row gap-2">
             <input
-              type="url"
-              placeholder="https://example.com/stream/track.mp3"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
+              type="text"
+              placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
+              value={ytInput}
+              onChange={(e) => setYtInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  analyzeYouTube(ytInput);
+                }
+              }}
               className="flex-1 px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono text-[11px] focus:outline-none focus:border-blue-500"
             />
             <button
               type="button"
-              onClick={handlePullFromUrl}
-              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors shrink-0 flex items-center gap-1.5"
+              onClick={() => analyzeYouTube(ytInput)}
+              disabled={isAnalyzing}
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-colors shrink-0 flex items-center justify-center gap-1.5 disabled:opacity-60"
             >
-              <Wand2 className="w-3.5 h-3.5" />
-              <span>Pull & Analyze</span>
+              {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+              <span>{isAnalyzing ? 'Checking...' : 'Pull & Analyze'}</span>
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-            <span className="font-medium text-slate-700 dark:text-slate-300">Quick Test Streams:</span>
-            <button
-              type="button"
-              onClick={() => {
-                setUrlInput('https://ia801503.us.archive.org/15/items/chill-lofi-song/chill-lofi-song.mp3');
-              }}
-              className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:text-blue-500 text-[10px]"
-            >
-              Lo-Fi Study Beat (Archive.org)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setUrlInput('https://ia800301.us.archive.org/12/items/78_moonlight-sonata_boston-symphony-orchestra-beethoven_gbia0001004a/01%20Moonlight%20Sonata%20Op.%2027%20No.%202.mp3');
-              }}
-              className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:text-blue-500 text-[10px]"
-            >
-              Moonlight Sonata
-            </button>
+          {ytProblem && (
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-xs text-rose-800 dark:text-rose-200">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{ytProblem}</span>
+            </div>
+          )}
+
+          {ytInfo && (
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-white dark:bg-slate-950 border border-emerald-200 dark:border-emerald-500/30">
+              <img src={ytInfo.thumbnail} alt="" className="w-24 h-14 rounded-lg object-cover shrink-0" />
+              <div className="min-w-0 text-xs">
+                <p className="font-bold text-slate-900 dark:text-white truncate">{ytInfo.title || 'YouTube video'}</p>
+                <p className="text-slate-500 dark:text-slate-400 truncate">{ytInfo.author || ytInfo.videoId}</p>
+                <p className="text-emerald-600 dark:text-emerald-400 font-semibold mt-0.5">
+                  {ytInfo.checked ? '✓ Can be played on the site' : '✓ Link looks valid (YouTube did not answer the embed check)'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hideVideo}
+              onChange={(e) => setHideVideo(e.target.checked)}
+              className="mt-0.5 rounded border-slate-300"
+            />
+            <span>Hide the video from listeners (they only hear the song). You can change this later when editing the song.</span>
+          </label>
+
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">These work:</p>
+            <p>youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..., music.youtube.com/watch?v=...</p>
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mt-1.5 mb-0.5">These do not:</p>
+            <p>Playlists, channels, Spotify / SoundCloud / Apple Music, and videos whose owner blocks embedding.</p>
           </div>
-          <p className="text-[10px] text-slate-400 mt-2">
-            Tip: Pulls data and auto-calculates track duration. You can edit the author, title, tags, and album below before publishing.
-          </p>
         </div>
       )}
 
-      {/* Tab 3: Local File Uploader */}
-      {activeTab === 'file' && (
-        <div className="mb-6">
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`p-6 sm:p-8 rounded-2xl border-2 border-dashed text-center cursor-pointer transition-all ${
-              isDragging
-                ? 'border-blue-500 bg-blue-50 dark:bg-blue-500/10'
-                : audioUrl && !isUploadingAudio
-                ? 'border-emerald-500/60 bg-emerald-50/50 dark:bg-emerald-500/10'
-                : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 hover:border-blue-500/50 hover:bg-slate-100/50'
-            }`}
-          >
+      {/* Tab: Audio / Google Drive link */}
+      {activeTab === 'link' && (
+        <div className="mb-6 p-5 rounded-2xl bg-gradient-to-b from-blue-50/70 to-slate-50 dark:from-blue-950/20 dark:to-slate-900/60 border border-blue-200/80 dark:border-blue-900/40 space-y-3">
+          <label className="block text-xs font-semibold text-slate-800 dark:text-slate-200">
+            Paste a direct audio link or a Google Drive share link
+          </label>
+          <div className="flex flex-col sm:flex-row gap-2">
             <input
-              type="file"
-              ref={fileInputRef}
-              accept="audio/*"
-              onChange={(e) => {
-                if (e.target.files && e.target.files[0]) {
-                  processAudioFile(e.target.files[0]);
+              type="text"
+              placeholder="https://example.com/song.mp3 or https://drive.google.com/file/d/..."
+              value={linkInput}
+              onChange={(e) => setLinkInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  analyzeLink();
                 }
               }}
-              className="hidden"
+              className="flex-1 px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono text-[11px] focus:outline-none focus:border-blue-500"
             />
+            <button
+              type="button"
+              onClick={analyzeLink}
+              disabled={isAnalyzing}
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-colors shrink-0 flex items-center justify-center gap-1.5 disabled:opacity-60"
+            >
+              {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+              <span>{isAnalyzing ? 'Testing link...' : 'Pull & Analyze'}</span>
+            </button>
+          </div>
 
-            {isUploadingAudio ? (
-              <div className="space-y-3 flex flex-col items-center max-w-xs mx-auto">
-                <Loader2 className="w-8 h-8 text-blue-600 dark:text-blue-400 animate-spin mx-auto" />
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                  Uploading track ({uploadProgress}%)
-                </span>
-                <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className="bg-blue-600 h-full transition-all duration-300 rounded-full"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Processing audio for streaming...</p>
-              </div>
-            ) : audioUrl ? (
-              <div className="space-y-1">
-                <span className="text-emerald-700 dark:text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  Audio Stream Loaded: {uploadedAudioName || 'Ready to Stream'}
-                </span>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Click to choose a different audio file</p>
-              </div>
-            ) : (
-              <div className="space-y-1">
-                <Upload className="w-8 h-8 text-blue-600 dark:text-blue-400 mx-auto mb-2" />
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
-                  Drop your MP3, WAV, or M4A audio file here, or click to browse
-                </h4>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Instant local extraction & resilient server streaming
-                </p>
-              </div>
-            )}
+          {linkResult && (
+            <div
+              className={`flex items-start gap-2 p-3 rounded-xl border text-xs ${
+                linkResult.ok
+                  ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-200'
+                  : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-800 dark:text-rose-200'
+              }`}
+            >
+              {!linkResult.ok && <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />}
+              <span>{linkResult.text}</span>
+            </div>
+          )}
+
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">These work:</p>
+            <p>A link straight to an audio file (ends in .mp3, .m4a, .wav or .ogg), or a Google Drive file shared as &quot;Anyone with the link&quot;.</p>
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mt-1.5 mb-0.5">These do not:</p>
+            <p>Web pages, folders, download pages, and streaming services. Songs only publish after the link passes the test above.</p>
           </div>
         </div>
       )}
@@ -959,7 +969,7 @@ export const ManualSongUploader: React.FC<ManualSongUploaderProps> = ({ onEditSo
           </label>
           <input
             type="text"
-            placeholder="URL will auto-fill from Catalog, Web URL, or File upload"
+            placeholder="Fills in automatically after you pull a link above"
             value={audioUrl}
             onChange={(e) => setAudioUrl(e.target.value)}
             className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-mono text-[11px] focus:outline-none focus:border-blue-500"
