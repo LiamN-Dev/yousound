@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { checkSqlAvailability, createPool } from './index.ts';
+import { checkSqlAvailability, createPool, getDatabaseHealth } from './index.ts';
 
 /**
  * Makes sure the Postgres / Supabase database has every table the app needs.
@@ -17,7 +17,11 @@ export async function ensureTables(): Promise<void> {
     available = await checkSqlAvailability();
   } catch (_) {}
   if (!available) {
-    console.log('[Schema] No SQL database connected; using the local store.');
+    console.warn('==================================================================');
+    console.warn('[Database] NOT CONNECTED - data is stored on a temporary disk and is');
+    console.warn('[Database] ERASED on every redeploy. Reason: ' + (getDatabaseHealth().lastError || 'unknown'));
+    console.warn('[Database] Fix: add DATABASE_URL (Supabase "Session pooler" string) in Render > Environment.');
+    console.warn('==================================================================');
     return;
   }
 
