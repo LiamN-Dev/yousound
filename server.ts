@@ -68,9 +68,9 @@ import {
   bulkUpdateSongsDb,
   bulkDeleteSongsDb,
   initDatabaseSchemaExtensions,
-} from './src/db/queries.ts';
-import { seedDatabaseIfEmpty } from './src/db/seed.ts';
-import { ensureTables } from './src/db/ensureTables.ts';
+} from './src/db/queries';
+import { seedDatabaseIfEmpty } from './src/db/seed';
+import { ensureTables } from './src/db/ensureTables';
 import {
   attachUser,
   enforcePolicy,
@@ -83,7 +83,7 @@ import {
   loginBlocked,
   noteLoginFailure,
   clearLoginFailures,
-} from './src/services/auth.ts';
+} from './src/services/auth';
 import {
   createFeedbackDb,
   listFeedbackDb,
