@@ -161,6 +161,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    // Ends the server-side session (clears the secure cookie)
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     storage.setCurrentSessionUser(null);
     setCurrentUser(null);
     refreshState();
