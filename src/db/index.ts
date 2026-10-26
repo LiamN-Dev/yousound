@@ -54,6 +54,8 @@ export const getPoolConfig = (): PoolConfig => {
 };
 
 let lastError: string | null = null;
+let lastDbError: { where: string; message: string; at: string } | null = null;
+const recentDbErrors = new Map<string, number>();
 let lastCheckAt = 0;
 let checkInFlight: Promise<boolean> | null = null;
 const RECHECK_MS = 30_000;
@@ -123,7 +125,31 @@ export const checkSqlAvailability = async (): Promise<boolean> => {
   return checkInFlight;
 };
 
+/**
+ * Records (and logs) a database error that the app would otherwise swallow.
+ * The error text never includes the SQL parameters (those can contain passwords).
+ */
+export const noteDbError = (where: string, err: any) => {
+  const root = err?.cause || err;
+  let message: string = String(root?.message || err?.message || err || 'unknown error');
+  if (root?.detail) message += ` (${root.detail})`;
+  if (message.length > 300) message = message.slice(0, 300) + '...';
+  lastDbError = { where, message, at: new Date().toISOString() };
+  const key = `${where}|${message}`;
+  const now = Date.now();
+  const prev = recentDbErrors.get(key);
+  if (!prev || now - prev > 60_000) {
+    recentDbErrors.set(key, now);
+    console.error(`[Database] ${where} failed: ${message}`);
+  }
+};
+
+export const clearDbError = () => {
+  lastDbError = null;
+};
+
 export const getDatabaseHealth = () => ({
+  lastDbError,
   configured: hasConfig(),
   connected: isAvailable,
   lastError,
