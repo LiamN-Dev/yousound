@@ -89,19 +89,19 @@ import {
   listFeedbackDb,
   updateFeedbackDb,
   deleteFeedbackDb,
-} from './src/db/feedback.ts';
-import { extractAudioFromYouTube, uploadMp3ToGoogleDrive } from './src/services/audioPipeline.ts';
+} from './src/db/feedback';
+import { extractAudioFromYouTube, uploadMp3ToGoogleDrive } from './src/services/audioPipeline';
 import {
   generateSupabaseMigrationSql,
   testSupabaseDbConnection,
   syncLocalDataToSupabase,
-} from './src/services/supabaseMigration.ts';
+} from './src/services/supabaseMigration';
 import {
   setSupabaseConnectionString,
   getActiveConnectionString,
   checkSqlAvailability,
   getDatabaseHealth,
-} from './src/db/index.ts';
+} from './src/db/index';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
