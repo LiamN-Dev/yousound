@@ -1,5 +1,8 @@
 import fs from 'fs';
 import path from 'path';
+import { is } from 'drizzle-orm';
+import { getTableConfig, PgTable } from 'drizzle-orm/pg-core';
+import * as schema from './schema.ts';
 import { checkSqlAvailability, createPool, getDatabaseHealth } from './index.ts';
 
 /**
@@ -73,6 +76,72 @@ export async function ensureTables(): Promise<void> {
   ];
   for (const [table, col] of columns) {
     await run(`${table}.${col.split(' ')[0]}`, `ALTER TABLE IF EXISTS ${table} ADD COLUMN IF NOT EXISTS ${col}`);
+  }
+
+
+  // 2b. Compare every table with what the app expects and repair differences.
+  //     (A table created by an older version can be missing columns, which makes every
+  //      save fail. Those failures used to be hidden, so data "disappeared".)
+  try {
+    for (const value of Object.values(schema)) {
+      if (!is(value as any, PgTable)) continue;
+      const cfg = getTableConfig(value as any);
+      const table = cfg.name;
+      const existingRes = await pool.query(
+        `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = $1`,
+        [table]
+      );
+      if (existingRes.rowCount === 0) continue; // table missing; created above
+      const existing = new Map<string, any>(existingRes.rows.map((r: any) => [r.column_name, r]));
+
+      for (const col of cfg.columns as any[]) {
+        const found = existing.get(col.name);
+        const sqlType: string = col.getSQLType();
+        if (!found) {
+          let def = '';
+          if (typeof col.default === 'string') def = ` DEFAULT '${col.default.replace(/'/g, "''")}'`;
+          else if (typeof col.default === 'number' || typeof col.default === 'boolean') def = ` DEFAULT ${col.default}`;
+          else if (col.hasDefault && sqlType.startsWith('timestamp')) def = ' DEFAULT now()';
+          const ok = await run(
+            `add ${table}.${col.name}`,
+            `ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${col.name}" ${sqlType}${def}`
+          );
+          if (ok) console.log(`[Schema] Added missing column ${table}.${col.name}`);
+        } else if (sqlType === 'text' && !['text', 'character varying'].includes(found.data_type)) {
+          // text can safely hold anything, so convert
+          const ok = await run(
+            `convert ${table}.${col.name}`,
+            `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" TYPE text USING "${col.name}"::text`
+          );
+          if (ok) console.log(`[Schema] Converted ${table}.${col.name} from ${found.data_type} to text`);
+        }
+      }
+
+      // Columns the app never fills in must not be NOT NULL, or every insert fails
+      const pkRes = await pool.query(
+        `SELECT a.attname AS name
+           FROM pg_index i
+           JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+          WHERE i.indrelid = $1::regclass AND i.indisprimary`,
+        [`public."${table}"`]
+      );
+      const pk = new Set<string>(pkRes.rows.map((r: any) => r.name));
+      for (const [name, info] of existing) {
+        if (info.is_nullable !== 'NO' || info.column_default || pk.has(name)) continue;
+        const def = (cfg.columns as any[]).find((c) => c.name === name);
+        if (!def || !def.notNull) {
+          const ok = await run(
+            `relax ${table}.${name}`,
+            `ALTER TABLE "${table}" ALTER COLUMN "${name}" DROP NOT NULL`
+          );
+          if (ok) console.log(`[Schema] ${table}.${name} no longer blocks saves (NOT NULL removed)`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Schema] Column check failed:', err?.message || err);
   }
 
   // 3. A message must never be rejected because its thread row lives elsewhere
