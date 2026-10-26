@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Wrench, Lock, Sparkles, Clock } from 'lucide-react';
+import { Wrench, Lock, Sparkles, Clock, Activity } from 'lucide-react';
 
 interface MaintenanceScreenProps {
   onOpenAdminAuth: () => void;
@@ -121,8 +121,18 @@ export const MaintenanceScreen: React.FC<MaintenanceScreenProps> = ({ onOpenAdmi
 
         {/* Custom Message from Admin */}
         <div className="p-4 rounded-2xl bg-slate-950/40 border border-slate-800 text-sm text-slate-300 max-w-md mx-auto leading-relaxed mb-8">
-          "{maintenanceState.message || 'We are currently updating our audio servers. Please check back shortly!'}"
+          {maintenanceState.message || 'We are currently updating our audio servers. Please check back shortly!'}
         </div>
+
+        <a
+          href="https://yousound.betteruptime.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-5 py-2.5 mb-8 -mt-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-colors"
+        >
+          <Activity className="w-4 h-4" />
+          <span>Check status page</span>
+        </a>
 
         {/* Footer Admin Unlock */}
         <div className="pt-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4">
