@@ -1,5 +1,5 @@
 import { eq, desc, and, or, asc, inArray, isNotNull, lte, ilike, sql } from 'drizzle-orm';
-import { db, checkSqlAvailability } from './index.ts';
+import { db, checkSqlAvailability, noteDbError } from './index.ts';
 import { localStore } from './localStore.ts';
 import {
   users,
@@ -24,6 +24,7 @@ export async function getUsersDb() {
   try {
     return await db.select().from(users).orderBy(desc(users.createdAt));
   } catch (error) {
+    noteDbError('getUsersDb', error);
     return localStore.getUsers();
   }
 }
@@ -34,8 +35,9 @@ export async function getUserByUid(uid: string) {
   }
   try {
     const rows = await db.select().from(users).where(eq(users.uid, uid)).limit(1);
-    return rows[0] || localStore.getUserByUid(uid);
+    return rows[0] || null;
   } catch (error) {
+    noteDbError('getUserByUid', error);
     return localStore.getUserByUid(uid);
   }
 }
@@ -50,8 +52,9 @@ export async function getUserByUsername(username: string) {
       .from(users)
       .where(eq(users.username, username.trim()))
       .limit(1);
-    return rows[0] || localStore.getUserByUsername(username);
+    return rows[0] || null;
   } catch (error) {
+    noteDbError('getUserByUsername', error);
     return localStore.getUserByUsername(username);
   }
 }
@@ -86,6 +89,7 @@ export async function createUserDb(data: {
     localStore.createUser(data);
     return inserted[0];
   } catch (error) {
+    noteDbError('createUserDb', error);
     return localStore.createUser(data);
   }
 }
@@ -126,6 +130,7 @@ export async function updateUserDb(
     localStore.updateUser(userId, updates);
     return updated[0] || localStore.updateUser(userId, updates);
   } catch (error) {
+    noteDbError('updateUserDb', error);
     return localStore.updateUser(userId, updates);
   }
 }
@@ -138,7 +143,7 @@ export async function recordUserLoginDb(uid: string) {
       .update(users)
       .set({ lastLoginAt: new Date() })
       .where(eq(users.uid, uid));
-  } catch (_) {}
+  } catch (_) { noteDbError('recordUserLoginDb', _); }
 }
 
 export async function recordUserSongListenedDb(uid: string, songSummary: string) {
@@ -152,7 +157,7 @@ export async function recordUserSongListenedDb(uid: string, songSummary: string)
         lastSongListenedAt: new Date(),
       })
       .where(eq(users.uid, uid));
-  } catch (_) {}
+  } catch (_) { noteDbError('recordUserSongListenedDb', _); }
 }
 
 export async function deleteUserDb(uid: string) {
@@ -162,6 +167,7 @@ export async function deleteUserDb(uid: string) {
     await db.delete(users).where(eq(users.uid, uid));
     return true;
   } catch (_) {
+    noteDbError('deleteUserDb', _);
     return true;
   }
 }
@@ -173,11 +179,9 @@ export async function getSongsDb() {
   }
   try {
     const list = await db.select().from(songs).orderBy(desc(songs.addedAt));
-    if (list.length === 0) {
-      return localStore.getSongs();
-    }
     return list;
   } catch (error) {
+    noteDbError('getSongsDb', error);
     return localStore.getSongs();
   }
 }
@@ -262,6 +266,7 @@ export async function insertSongDb(songData: {
       .returning();
     return inserted[0] || songData;
   } catch (error) {
+    noteDbError('insertSongDb', error);
     return songData;
   }
 }
@@ -279,6 +284,7 @@ export async function updateSongDb(id: string, updates: any) {
       .returning();
     return updated[0] || localStore.updateSong(id, updates);
   } catch (error) {
+    noteDbError('updateSongDb', error);
     return localStore.updateSong(id, updates);
   }
 }
@@ -325,6 +331,7 @@ export async function bulkUpdateSongsDb(
     }
     return results;
   } catch (error) {
+    noteDbError('bulkUpdateSongsDb', error);
     return localStore.bulkUpdateSongs(songIds, updates);
   }
 }
@@ -336,6 +343,7 @@ export async function deleteSongDb(id: string) {
     await db.delete(songs).where(eq(songs.id, id));
     return true;
   } catch (error) {
+    noteDbError('deleteSongDb', error);
     return true;
   }
 }
@@ -347,6 +355,7 @@ export async function bulkDeleteSongsDb(songIds: string[]) {
     await db.delete(songs).where(inArray(songs.id, songIds));
     return true;
   } catch (error) {
+    noteDbError('bulkDeleteSongsDb', error);
     return true;
   }
 }
@@ -373,6 +382,7 @@ export async function incrementSongPlayDb(id: string, isAdmin: boolean = false) 
       .returning();
     return updated[0] || localRes;
   } catch (error) {
+    noteDbError('incrementSongPlayDb', error);
     return localRes;
   }
 }
@@ -392,6 +402,7 @@ export async function resetSongPlaysDb(id: string) {
       .returning();
     return updated[0] || localStore.resetSongPlays(id);
   } catch (error) {
+    noteDbError('resetSongPlaysDb', error);
     return localStore.resetSongPlays(id);
   }
 }
@@ -410,6 +421,7 @@ export async function bulkResetSongPlaysDb(ids?: string[]) {
     }
     return true;
   } catch (error) {
+    noteDbError('bulkResetSongPlaysDb', error);
     return true;
   }
 }
@@ -429,6 +441,7 @@ export async function getPlaylistsDb(userId?: string) {
     }
     return await db.select().from(playlists);
   } catch (error) {
+    noteDbError('getPlaylistsDb', error);
     return localStore.getPlaylists(userId);
   }
 }
@@ -461,6 +474,7 @@ export async function createPlaylistDb(data: {
       .returning();
     return inserted[0] || data;
   } catch (error) {
+    noteDbError('createPlaylistDb', error);
     return data;
   }
 }
@@ -478,6 +492,7 @@ export async function updatePlaylistDb(id: string, updates: any) {
       .returning();
     return updated[0] || localStore.updatePlaylist(id, updates);
   } catch (error) {
+    noteDbError('updatePlaylistDb', error);
     return localStore.updatePlaylist(id, updates);
   }
 }
@@ -489,6 +504,7 @@ export async function deletePlaylistDb(id: string) {
     await db.delete(playlists).where(eq(playlists.id, id));
     return true;
   } catch (error) {
+    noteDbError('deletePlaylistDb', error);
     return true;
   }
 }
@@ -502,6 +518,7 @@ export async function getFavoritesDb(userId: string): Promise<string[]> {
     const rows = await db.select().from(favorites).where(eq(favorites.userId, userId));
     return rows.map((r) => r.songId);
   } catch (error) {
+    noteDbError('getFavoritesDb', error);
     return localStore.getFavorites(userId);
   }
 }
@@ -526,6 +543,7 @@ export async function toggleFavoriteDb(userId: string, songId: string): Promise<
       return true;
     }
   } catch (error) {
+    noteDbError('toggleFavoriteDb', error);
     return localResult;
   }
 }
@@ -543,6 +561,7 @@ export async function getRequestsDb() {
     await cleanupExpiredSongRequestsDb();
     return await db.select().from(songRequests).orderBy(desc(songRequests.createdAt));
   } catch (error) {
+    noteDbError('getRequestsDb', error);
     return localStore.getRequests();
   }
 }
@@ -555,6 +574,7 @@ export async function getRequestByIdDb(id: string) {
     const rows = await db.select().from(songRequests).where(eq(songRequests.id, id)).limit(1);
     return rows[0] || localStore.getRequestById(id);
   } catch (error) {
+    noteDbError('getRequestByIdDb', error);
     return localStore.getRequestById(id);
   }
 }
@@ -599,6 +619,7 @@ export async function createRequestDb(data: {
       .returning();
     return inserted[0] || localStore.getRequestById(data.id);
   } catch (error) {
+    noteDbError('createRequestDb', error);
     return localStore.getRequestById(data.id);
   }
 }
@@ -639,6 +660,7 @@ export async function updateRequestFullDb(
       .returning();
     return updated[0] || localStore.getRequestById(id);
   } catch (error) {
+    noteDbError('updateRequestFullDb', error);
     return localStore.getRequestById(id);
   }
 }
@@ -661,6 +683,7 @@ export async function updateRequestDb(id: string, status: string, adminNote?: st
       .returning();
     return updated[0] || localStore.getRequestById(id);
   } catch (error) {
+    noteDbError('updateRequestDb', error);
     return localStore.getRequestById(id);
   }
 }
@@ -672,6 +695,7 @@ export async function deleteRequestDb(id: string) {
     await db.delete(songRequests).where(eq(songRequests.id, id));
     return true;
   } catch (error) {
+    noteDbError('deleteRequestDb', error);
     return true;
   }
 }
@@ -685,6 +709,7 @@ export async function getPopupsDb() {
     const list = await db.select().from(popups).orderBy(desc(popups.createdAt));
     return list;
   } catch (error) {
+    noteDbError('getPopupsDb', error);
     return localStore.getPopups();
   }
 }
@@ -714,7 +739,7 @@ export async function purgeWelcomePopupsDb(): Promise<void> {
     if (toDelete.length > 0) {
       await db.delete(popups).where(inArray(popups.id, toDelete));
     }
-  } catch (_) {}
+  } catch (_) { noteDbError('purgeWelcomePopupsDb', _); }
 }
 
 export async function createPopupDb(data: {
@@ -747,6 +772,7 @@ export async function createPopupDb(data: {
       .returning();
     return inserted[0];
   } catch (error) {
+    noteDbError('createPopupDb', error);
     return localStore.createPopup(data);
   }
 }
@@ -762,6 +788,7 @@ export async function updatePopupDb(id: string, active: boolean) {
       .returning();
     return updated[0];
   } catch (error) {
+    noteDbError('updatePopupDb', error);
     return localStore.updatePopup(id, active);
   }
 }
@@ -773,6 +800,7 @@ export async function deletePopupDb(id: string) {
     await db.delete(popups).where(eq(popups.id, id));
     return true;
   } catch (error) {
+    noteDbError('deletePopupDb', error);
     return true;
   }
 }
@@ -791,6 +819,7 @@ export async function getSettingDb<T = any>(key: string): Promise<T | null> {
     if (!rows[0]) return localStore.getSetting(key) as T;
     return JSON.parse(rows[0].value) as T;
   } catch (error) {
+    noteDbError('getSettingDb', error);
     return localStore.getSetting(key) as T;
   }
 }
@@ -809,6 +838,7 @@ export async function setSettingDb(key: string, value: any) {
       });
     return value;
   } catch (error) {
+    noteDbError('setSettingDb', error);
     return value;
   }
 }
@@ -830,7 +860,7 @@ export async function saveMediaFileDb(
         target: mediaFiles.id,
         set: { data, mimeType, size, createdAt: new Date() },
       });
-  } catch (_) {}
+  } catch (_) { noteDbError('saveMediaFileDb', _); }
 }
 
 export async function getMediaFileDb(id: string) {
@@ -841,6 +871,7 @@ export async function getMediaFileDb(id: string) {
     const rows = await db.select().from(mediaFiles).where(eq(mediaFiles.id, id)).limit(1);
     return rows[0] || localStore.getMediaFile(id);
   } catch (_) {
+    noteDbError('getMediaFileDb', _);
     return localStore.getMediaFile(id);
   }
 }
@@ -850,7 +881,8 @@ export async function getChatRequestsDb() {
   if (!(await checkSqlAvailability())) return localStore.getChatRequests();
   try {
     return await db.select().from(chatRequests).orderBy(desc(chatRequests.createdAt));
-  } catch {
+  } catch (e) {
+    noteDbError('getChatRequestsDb', e);
     return localStore.getChatRequests();
   }
 }
@@ -863,7 +895,8 @@ export async function getChatRequestsForUserDb(userId: string) {
       .from(chatRequests)
       .where(or(eq(chatRequests.senderId, userId), eq(chatRequests.receiverId, userId)))
       .orderBy(desc(chatRequests.createdAt));
-  } catch {
+  } catch (e) {
+    noteDbError('getChatRequestsForUserDb', e);
     return localStore.getChatRequestsForUser(userId);
   }
 }
@@ -896,7 +929,8 @@ export async function createChatRequestDb(data: {
       })
       .returning();
     return inserted[0];
-  } catch {
+  } catch (e) {
+    noteDbError('createChatRequestDb', e);
     return localStore.createChatRequest(data);
   }
 }
@@ -919,7 +953,8 @@ export async function updateChatRequestStatusDb(
       .where(eq(chatRequests.id, id))
       .returning();
     return updated[0];
-  } catch {
+  } catch (e) {
+    noteDbError('updateChatRequestStatusDb', e);
     return localStore.updateChatRequestStatus(id, status, adminNote);
   }
 }
@@ -930,7 +965,8 @@ export async function deleteChatRequestDb(id: string) {
   try {
     await db.delete(chatRequests).where(eq(chatRequests.id, id));
     return true;
-  } catch {
+  } catch (e) {
+    noteDbError('deleteChatRequestDb', e);
     return true;
   }
 }
@@ -939,7 +975,8 @@ export async function getChatThreadsDb() {
   if (!(await checkSqlAvailability())) return localStore.getChatThreads();
   try {
     return await db.select().from(chatThreads).orderBy(desc(chatThreads.lastMessageAt));
-  } catch {
+  } catch (e) {
+    noteDbError('getChatThreadsDb', e);
     return localStore.getChatThreads();
   }
 }
@@ -953,7 +990,8 @@ export async function getChatThreadsForUserDb(userId: string) {
       .where(or(eq(chatThreads.user1Id, userId), eq(chatThreads.user2Id, userId)))
       .orderBy(desc(chatThreads.lastMessageAt));
     return all.filter((t) => !(t.hiddenByUserIds || []).includes(userId));
-  } catch {
+  } catch (e) {
+    noteDbError('getChatThreadsForUserDb', e);
     return localStore.getChatThreadsForUser(userId);
   }
 }
@@ -973,7 +1011,8 @@ export async function hideChatThreadForUserDb(threadId: string, userId: string) 
         .where(eq(chatThreads.id, threadId));
     }
     return true;
-  } catch {
+  } catch (e) {
+    noteDbError('hideChatThreadForUserDb', e);
     return true;
   }
 }
@@ -987,7 +1026,8 @@ export async function getChatThreadByIdDb(threadId: string) {
   try {
     const rows = await db.select().from(chatThreads).where(eq(chatThreads.id, threadId)).limit(1);
     return rows[0] || localStore.getChatThreadById(threadId);
-  } catch {
+  } catch (e) {
+    noteDbError('getChatThreadByIdDb', e);
     return localStore.getChatThreadById(threadId);
   }
 }
@@ -1036,6 +1076,7 @@ export async function createOrForceChatThreadDb(
       .returning();
     return inserted[0];
   } catch (err) {
+    noteDbError('createOrForceChatThreadDb', err);
     console.error('[Chat] createOrForceChatThreadDb failed, using local store:', err);
     return localStore.createOrForceChatThread(user1Id, user1Username, user2Id, user2Username, isAppeal);
   }
@@ -1056,6 +1097,7 @@ export async function setChatThreadTerminatedDb(
     const updated = await db.update(chatThreads).set(patch).where(eq(chatThreads.id, threadId)).returning();
     return updated[0] || localStore.setChatThreadTerminated(threadId, isTerminated, reason);
   } catch (err) {
+    noteDbError('setChatThreadTerminatedDb', err);
     console.error('[Chat] setChatThreadTerminatedDb failed:', err);
     return localStore.setChatThreadTerminated(threadId, isTerminated, reason);
   }
@@ -1068,6 +1110,7 @@ export async function deleteChatThreadDb(threadId: string) {
     await db.delete(chatMessages).where(eq(chatMessages.threadId, threadId));
     await db.delete(chatThreads).where(eq(chatThreads.id, threadId));
   } catch (err) {
+    noteDbError('deleteChatThreadDb', err);
     console.error('[Chat] deleteChatThreadDb failed:', err);
   }
   return true;
@@ -1079,6 +1122,7 @@ export async function deleteChatMessageDb(messageId: string) {
   try {
     await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
   } catch (err) {
+    noteDbError('deleteChatMessageDb', err);
     console.error('[Chat] deleteChatMessageDb failed:', err);
   }
   return true;
@@ -1093,6 +1137,7 @@ export async function getChatMessagesDb(threadId: string) {
       .where(eq(chatMessages.threadId, threadId))
       .orderBy(asc(chatMessages.createdAt));
   } catch (err) {
+    noteDbError('getChatMessagesDb', err);
     console.error('[Chat] getChatMessagesDb failed:', err);
     return localStore.getChatMessages(threadId);
   }
@@ -1103,6 +1148,7 @@ export async function getAllChatMessagesDb(limitCount: number = 200) {
   try {
     return await db.select().from(chatMessages).orderBy(desc(chatMessages.createdAt)).limit(limitCount);
   } catch (err) {
+    noteDbError('getAllChatMessagesDb', err);
     console.error('[Chat] getAllChatMessagesDb failed:', err);
     return localStore.getAllChatMessages(limitCount);
   }
@@ -1145,6 +1191,7 @@ export async function createChatMessageDb(data: {
 
     return inserted[0];
   } catch (err) {
+    noteDbError('createChatMessageDb', err);
     console.error('[Chat] createChatMessageDb failed:', err);
     throw err;
   }
@@ -1155,6 +1202,7 @@ export async function getChatPairingBlocksDb() {
   try {
     return await db.select().from(chatPairingBlocks).orderBy(desc(chatPairingBlocks.createdAt));
   } catch (err) {
+    noteDbError('getChatPairingBlocksDb', err);
     console.error('[Chat] getChatPairingBlocksDb failed:', err);
     return localStore.getChatPairingBlocks();
   }
@@ -1176,6 +1224,7 @@ export async function createChatPairingBlockDb(
       .returning();
     return inserted[0];
   } catch (err) {
+    noteDbError('createChatPairingBlockDb', err);
     console.error('[Chat] createChatPairingBlockDb failed:', err);
     return localStore.createChatPairingBlock(user1Id, user2Id, blockedBy, reason);
   }
@@ -1187,6 +1236,7 @@ export async function deleteChatPairingBlockDb(id: number) {
     await db.delete(chatPairingBlocks).where(eq(chatPairingBlocks.id, id));
     return true;
   } catch (err) {
+    noteDbError('deleteChatPairingBlockDb', err);
     console.error('[Chat] deleteChatPairingBlockDb failed:', err);
     return localStore.deleteChatPairingBlock(id);
   }
@@ -1207,6 +1257,7 @@ export async function isChatPairingBlockedDb(user1Id: string, user2Id: string) {
       .limit(1);
     return rows.length > 0;
   } catch (err) {
+    noteDbError('isChatPairingBlockedDb', err);
     console.error('[Chat] isChatPairingBlockedDb failed:', err);
     return localStore.isChatPairingBlocked(user1Id, user2Id);
   }
