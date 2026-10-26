@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { storage } from '../services/storage';
 import {
@@ -189,6 +189,40 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
   const [feedback, setFeedback] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Live check of the pasted link, so people know right away if it will work
+  const [linkCheck, setLinkCheck] = useState<{
+    state: 'idle' | 'checking' | 'ok' | 'bad';
+    text?: string;
+    title?: string;
+    thumbnail?: string;
+  }>({ state: 'idle' });
+
+  useEffect(() => {
+    const text = webLink.trim();
+    if (!text) {
+      setLinkCheck({ state: 'idle' });
+      return;
+    }
+    setLinkCheck({ state: 'checking' });
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const r = await storage.previewYouTube(text);
+      if (cancelled) return;
+      if (r.valid) {
+        setLinkCheck({ state: 'ok', title: r.title, thumbnail: r.thumbnail });
+        // Pre-fill the guesses when they are still empty
+        if (r.title) setSongTitle((prev) => prev || r.title || '');
+        if (r.author) setArtist((prev) => prev || r.author || '');
+      } else {
+        setLinkCheck({ state: 'bad', text: r.reason });
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [webLink]);
+
   if (!isOpen) return null;
 
   const userRequests = songRequests.filter((r) =>
@@ -198,8 +232,12 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!/(?:youtube\.com|youtu\.be)\//i.test(webLink.trim())) {
-      setFeedback('Please provide a valid YouTube link.');
+    if (linkCheck.state === 'checking') {
+      setFeedback('Hold on, the link is still being checked.');
+      return;
+    }
+    if (linkCheck.state !== 'ok') {
+      setFeedback(linkCheck.text || 'Please paste a link to one YouTube video.');
       return;
     }
     if (!songTitle.trim()) {
@@ -346,16 +384,44 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
                 <span>YouTube Link *</span>
               </label>
               <input
-                type="url"
+                type="text"
                 placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
                 value={webLink}
                 onChange={(e) => setWebLink(e.target.value)}
                 className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
                 required
               />
-              <span className="text-[10px] text-slate-500 mt-1 block">
-                The link that will be extracted and converted into a clean .mp3 upon admin approval.
-              </span>
+
+              {linkCheck.state === 'checking' && (
+                <span className="text-[11px] text-slate-400 mt-1.5 block">Checking the link...</span>
+              )}
+              {linkCheck.state === 'bad' && (
+                <div className="mt-1.5 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-200">
+                  {linkCheck.text}
+                </div>
+              )}
+              {linkCheck.state === 'ok' && (
+                <div className="mt-1.5 flex items-center gap-2.5 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                  {linkCheck.thumbnail && (
+                    <img src={linkCheck.thumbnail} alt="" className="w-14 h-8 rounded-md object-cover shrink-0" />
+                  )}
+                  <div className="min-w-0 text-[11px]">
+                    <p className="text-emerald-300 font-semibold">This link works</p>
+                    {linkCheck.title && <p className="text-slate-300 truncate">{linkCheck.title}</p>}
+                  </div>
+                </div>
+              )}
+
+              <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">
+                <p>
+                  <span className="text-slate-400 font-semibold">Works:</span> a link to one YouTube video (youtube.com/watch,
+                  youtu.be, Shorts, or YouTube Music).
+                </p>
+                <p>
+                  <span className="text-slate-400 font-semibold">Does not work:</span> playlists, channels, Spotify, SoundCloud,
+                  Apple Music, or videos where the owner blocks other sites.
+                </p>
+              </div>
             </div>
 
             {/* 2. Initial Guess for Title & Artist */}
