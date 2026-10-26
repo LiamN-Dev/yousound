@@ -72,6 +72,19 @@ import {
 import { seedDatabaseIfEmpty } from './src/db/seed.ts';
 import { ensureTables } from './src/db/ensureTables.ts';
 import {
+  attachUser,
+  enforcePolicy,
+  getAuthUser,
+  isAdminReq,
+  hashPasswordSecure,
+  verifyPassword,
+  setSessionCookie,
+  clearSessionCookie,
+  loginBlocked,
+  noteLoginFailure,
+  clearLoginFailures,
+} from './src/services/auth.ts';
+import {
   createFeedbackDb,
   listFeedbackDb,
   updateFeedbackDb,
@@ -87,6 +100,7 @@ import {
   setSupabaseConnectionString,
   getActiveConnectionString,
   checkSqlAvailability,
+  getDatabaseHealth,
 } from './src/db/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -108,6 +122,11 @@ const PORT = getPort();
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Render sits behind a proxy; this lets us see real IPs and detect https
+app.set('trust proxy', 1);
+// Every /api request: work out who is calling (from the signed cookie), then apply the route rules
+app.use('/api', attachUser, enforcePolicy);
 
 // Statically serve images and assets so covers never 404
 app.use('/src/assets', express.static(path.resolve(__dirname, 'src/assets')));
@@ -146,15 +165,6 @@ const uploadCover = multer({
 });
 
 // Helper password hasher (matching frontend)
-function hashPassword(pass: string): string {
-  let hash = 0;
-  for (let i = 0; i < pass.length; i++) {
-    const char = pass.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return `hash_v2_${Math.abs(hash).toString(16)}_${btoa(pass).slice(0, 8)}`;
-}
 
 function toIsoString(val: any): string | null {
   if (!val) return null;
@@ -789,6 +799,11 @@ app.post('/api/media/probe-url', async (req: Request, res: Response) => {
 });
 
 // ----------------- SYSTEM STATUS & HEALTH -----------------
+app.get('/api/health', async (_req: Request, res: Response) => {
+  const connected = await checkSqlAvailability();
+  res.json({ ok: true, database: connected ? 'postgres' : 'local-temporary', persistent: connected });
+});
+
 app.get('/api/status', async (req: Request, res: Response) => {
   try {
     const banner = (await getSettingDb('banner')) || {
@@ -807,11 +822,14 @@ app.get('/api/status', async (req: Request, res: Response) => {
       estimatedFinishTime: null,
     };
 
+    const dbOnline = await checkSqlAvailability();
     res.json({
       status: 'online',
       appName: 'YouSong',
       creator: 'Admin',
-      database: 'Cloud SQL PostgreSQL (Connected & Persistent)',
+      database: dbOnline
+        ? 'PostgreSQL (saved permanently)'
+        : 'TEMPORARY LOCAL STORAGE (data is erased on redeploy)',
       version: banner.versionName,
       maintenance,
       banner,
@@ -826,28 +844,56 @@ app.get('/api/status', async (req: Request, res: Response) => {
 // 1. Password login
 app.post('/api/auth/login', async (req: Request, res: Response) => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
+    const { username, password } = req.body || {};
+    if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ success: false, error: 'Username and password required' });
     }
 
     const cleanUsername = username.trim();
+    const throttleKey = `${req.ip}|${cleanUsername.toLowerCase()}`;
+    if (loginBlocked(throttleKey)) {
+      return res.status(429).json({ success: false, error: 'Too many failed attempts. Please wait 15 minutes and try again.' });
+    }
+
     const user = await getUserByUsername(cleanUsername);
 
     if (!user) {
+      noteLoginFailure(throttleKey);
       return res.status(404).json({
         success: false,
         error: 'User does not exist. You can submit an account request below.',
       });
     }
 
-    const hashed = hashPassword(password);
-    if (user.passwordHash && user.passwordHash !== hashed && user.passwordHash !== password) {
-      return res.status(401).json({ success: false, error: 'Incorrect password.' });
+    const check = await verifyPassword(password, user.passwordHash);
+    if (!check.ok) {
+      noteLoginFailure(throttleKey);
+      return res.status(401).json({
+        success: false,
+        error: user.passwordHash
+          ? 'Incorrect password.'
+          : 'This account has no password set. Ask an admin to assign you a temporary password.',
+      });
+    }
+    clearLoginFailures(throttleKey);
+
+    // Quietly upgrade old weak password storage to salted scrypt
+    let passwordHash = user.passwordHash;
+    if (check.needsUpgrade) {
+      try {
+        passwordHash = await hashPasswordSecure(password);
+        await updateUserDb(user.uid, { passwordHash });
+      } catch (e) {
+        console.warn('[Security] Could not upgrade password storage for', user.username, e);
+        passwordHash = user.passwordHash;
+      }
     }
 
     // Record login timestamp
     await recordUserLoginDb(user.uid);
+
+    // Start the signed session
+    setSessionCookie(req, res, { uid: user.uid, passwordHash });
 
     res.json({
       success: true,
@@ -873,10 +919,41 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   }
 });
 
-// Check current user status / approval (no refresh needed)
+app.post('/api/auth/logout', (_req: Request, res: Response) => {
+  clearSessionCookie(res);
+  res.json({ success: true });
+});
+
+app.get('/api/auth/me', async (req: Request, res: Response) => {
+  const user = getAuthUser(req);
+  if (!user) return res.status(401).json({ success: false, error: 'Please log in again.' });
+  res.json({
+    success: true,
+    user: {
+      id: user.uid,
+      username: user.username,
+      role: user.role,
+      isApproved: user.isApproved,
+      createdAt: toIsoString(user.createdAt) || new Date().toISOString(),
+      note: user.note,
+      temporaryPasswordAssigned: user.temporaryPasswordAssigned,
+      isSuspended: user.isSuspended || false,
+      suspendedReason: user.suspendedReason || null,
+      lastLoginAt: toIsoString(user.lastLoginAt),
+      lastSongListened: user.lastSongListened,
+      lastSongListenedAt: toIsoString(user.lastSongListenedAt),
+      chatBlocked: user.chatBlocked || false,
+    },
+  });
+});
+
 app.get('/api/auth/me/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    const me = getAuthUser(req);
+    if (!me || (me.uid !== userId && me.role !== 'admin')) {
+      return res.status(403).json({ success: false, error: 'Not allowed' });
+    }
     const user = await getUserByUid(userId);
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -910,7 +987,7 @@ app.get('/api/auth/me/:userId', async (req: Request, res: Response) => {
 app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
     const { username, password, note } = req.body;
-    const clean = (username || '').trim();
+    const clean = (username || '').trim().slice(0, 40);
     if (!clean) return res.status(400).json({ success: false, error: 'Username is required' });
     if (!password || password.length < 4) {
       return res.status(400).json({ success: false, error: 'Password must be at least 4 characters' });
@@ -925,7 +1002,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
     const created = await createUserDb({
       uid,
       username: clean,
-      passwordHash: hashPassword(password),
+      passwordHash: await hashPasswordSecure(password),
       role: 'user',
       isApproved: false,
       note: (note || '').trim(),
@@ -953,40 +1030,35 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 // 4. Change own password
 app.post('/api/auth/change-password', async (req: Request, res: Response) => {
   try {
-    const { userId, currentPassword, newPassword } = req.body;
-    if (!userId || !newPassword || typeof newPassword !== 'string' || newPassword.length < 4) {
+    const { currentPassword, newPassword } = req.body || {};
+    const me = getAuthUser(req);
+    if (!me) return res.status(401).json({ success: false, error: 'Please log in again.' });
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 4) {
       return res.status(400).json({ success: false, error: 'Valid new password required (minimum 4 characters)' });
     }
 
-    const user = await getUserByUid(userId);
+    // You can only change your own password here
+    const user = await getUserByUid(me.uid);
     if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
     const isTemp = user.temporaryPasswordAssigned === true;
+    const typedCurrent = typeof currentPassword === 'string' ? currentPassword.trim() : '';
 
-    // If regular user change, enforce current password check.
-    // If user has a temporary password assigned, allow setting new password directly or verify if currentPassword provided.
-    if (!isTemp) {
-      if (
-        user.passwordHash &&
-        user.passwordHash !== hashPassword(currentPassword) &&
-        user.passwordHash !== currentPassword
-      ) {
-        return res.status(401).json({ success: false, error: 'Current password is incorrect' });
-      }
-    } else if (currentPassword && currentPassword.trim()) {
-      if (
-        user.passwordHash &&
-        user.passwordHash !== hashPassword(currentPassword.trim()) &&
-        user.passwordHash !== currentPassword.trim()
-      ) {
-        return res.status(401).json({ success: false, error: 'Current temporary password is incorrect' });
+    // A temporary password may be replaced directly; otherwise the current password is required
+    if (!isTemp || typedCurrent) {
+      const check = await verifyPassword(typedCurrent, user.passwordHash);
+      if (!check.ok) {
+        return res.status(401).json({
+          success: false,
+          error: isTemp ? 'Current temporary password is incorrect' : 'Current password is incorrect',
+        });
       }
     }
 
-    await updateUserDb(userId, {
-      passwordHash: hashPassword(newPassword.trim()),
-      temporaryPasswordAssigned: false,
-    });
+    const passwordHash = await hashPasswordSecure(newPassword.trim());
+    await updateUserDb(user.uid, { passwordHash, temporaryPasswordAssigned: false });
+    // The old session stops working after a password change, so give this browser a fresh one
+    setSessionCookie(req, res, { uid: user.uid, passwordHash });
 
     res.json({ success: true });
   } catch (error: any) {
@@ -999,6 +1071,20 @@ app.post('/api/auth/change-password', async (req: Request, res: Response) => {
 app.get('/api/users', async (req: Request, res: Response) => {
   try {
     const all = await getUsersDb();
+    if (!isAdminReq(req)) {
+      // Regular members only get the basics (needed to pick someone to chat with)
+      return res.json({
+        users: all
+          .filter((u) => u.isApproved && !u.isSuspended)
+          .map((u) => ({
+            id: u.uid,
+            username: u.username,
+            role: u.role,
+            isApproved: u.isApproved,
+            createdAt: toIsoString(u.createdAt) || new Date().toISOString(),
+          })),
+      });
+    }
     const formatted = all.map((u) => ({
       id: u.uid,
       username: u.username,
@@ -1073,7 +1159,7 @@ app.patch('/api/users/:uid', async (req: Request, res: Response) => {
 
     const targetPassword = newTemporaryPassword || password;
     if (targetPassword && targetPassword.trim()) {
-      updates.passwordHash = hashPassword(targetPassword.trim());
+      updates.passwordHash = await hashPasswordSecure(targetPassword.trim());
       updates.temporaryPasswordAssigned = true;
     }
 
@@ -1133,7 +1219,8 @@ app.patch('/api/users/:uid', async (req: Request, res: Response) => {
 
 app.post('/api/users/activity/listen', async (req: Request, res: Response) => {
   try {
-    const { userId, songTitle, songArtist } = req.body;
+    const { songTitle, songArtist } = req.body;
+    const userId = getAuthUser(req)?.uid;
     if (userId && songTitle) {
       const summary = songArtist ? `${songTitle} · ${songArtist}` : songTitle;
       await recordUserSongListenedDb(userId, summary);
@@ -1368,7 +1455,8 @@ app.post('/api/settings/spotlight', async (req: Request, res: Response) => {
 // ----------------- PLAYLISTS -----------------
 app.get('/api/playlists', async (req: Request, res: Response) => {
   try {
-    const userId = req.query.userId as string | undefined;
+    // Members only ever get their own playlists; admins may ask for anyone's
+    const userId = isAdminReq(req) ? (req.query.userId as string | undefined) : getAuthUser(req).uid;
     const list = await getPlaylistsDb(userId);
     res.json({ playlists: list });
   } catch (error: any) {
@@ -1379,7 +1467,8 @@ app.get('/api/playlists', async (req: Request, res: Response) => {
 
 app.post('/api/playlists', async (req: Request, res: Response) => {
   try {
-    const { userId, name, description, coverUrl } = req.body;
+    const { name, description, coverUrl } = req.body;
+    const userId = getAuthUser(req).uid;
     if (!name || !userId) {
       return res.status(400).json({ error: 'Name and userId are required' });
     }
@@ -1403,7 +1492,11 @@ app.post('/api/playlists', async (req: Request, res: Response) => {
 app.patch('/api/playlists/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    if (!isAdminReq(req)) {
+      const mine = await getPlaylistsDb(getAuthUser(req).uid);
+      if (!mine.some((p: any) => p.id === id)) return res.status(403).json({ error: 'Not your playlist' });
+    }
+    const { userId: _ignoredOwner, id: _ignoredId, ...updates } = req.body || {};
     const updated = await updatePlaylistDb(id, updates);
     res.json({ success: true, playlist: updated });
   } catch (error: any) {
@@ -1415,6 +1508,10 @@ app.patch('/api/playlists/:id', async (req: Request, res: Response) => {
 app.delete('/api/playlists/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    if (!isAdminReq(req)) {
+      const mine = await getPlaylistsDb(getAuthUser(req).uid);
+      if (!mine.some((p: any) => p.id === id)) return res.status(403).json({ error: 'Not your playlist' });
+    }
     await deletePlaylistDb(id);
     res.json({ success: true });
   } catch (error: any) {
@@ -1427,6 +1524,7 @@ app.delete('/api/playlists/:id', async (req: Request, res: Response) => {
 app.get('/api/favorites/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    if (getAuthUser(req).uid !== userId && !isAdminReq(req)) return res.status(403).json({ error: 'Not allowed' });
     const favs = await getFavoritesDb(userId);
     res.json({ favorites: favs });
   } catch (error: any) {
@@ -1438,6 +1536,7 @@ app.get('/api/favorites/:userId', async (req: Request, res: Response) => {
 app.post('/api/favorites/:userId/toggle', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    if (getAuthUser(req).uid !== userId && !isAdminReq(req)) return res.status(403).json({ error: 'Not allowed' });
     const { songId } = req.body;
     if (!songId) return res.status(400).json({ error: 'songId required' });
     const isFav = await toggleFavoriteDb(userId, songId);
@@ -1452,12 +1551,10 @@ app.post('/api/favorites/:userId/toggle', async (req: Request, res: Response) =>
 app.get('/api/requests', async (req: Request, res: Response) => {
   try {
     const list = await getRequestsDb();
-    const { userId, role } = req.query;
-
-    // Regular users can only see their own submissions in their personal tab.
-    // The holding queue and pending requests are completely hidden from regular users.
-    if (role !== 'admin' && userId) {
-      const userFiltered = list.filter((r) => r.requestedByUserId === userId);
+    // Regular users only ever see their own submissions. The holding queue stays hidden.
+    if (!isAdminReq(req)) {
+      const me = getAuthUser(req).uid;
+      const userFiltered = list.filter((r) => r.requestedByUserId === me);
       return res.json({ requests: userFiltered });
     }
 
@@ -1477,14 +1574,20 @@ app.post('/api/requests', async (req: Request, res: Response) => {
       webLink,
       coverUrl,
       notes,
-      requestedByUserId,
-      requestedByUsername,
       requestType,
       genre,
     } = req.body;
+    const requestedByUserId = getAuthUser(req).uid;
+    const requestedByUsername = getAuthUser(req).username;
 
     if (!songTitle || !songTitle.trim()) {
       return res.status(400).json({ error: 'Title is required' });
+    }
+    if (requestType !== 'feature') {
+      const linkCheck = checkYouTubeLink(String(webLink || ''));
+      if (!linkCheck.videoId) {
+        return res.status(400).json({ error: linkCheck.message });
+      }
     }
 
     const defaultCover = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop&q=80';
@@ -1579,6 +1682,56 @@ function extractYouTubeVideoId(input: string): string | null {
   return null;
 }
 
+type YouTubeCheck = { videoId: string | null; message: string };
+
+/** Explains in plain words why a pasted link can or cannot be used. */
+function checkYouTubeLink(input: string): YouTubeCheck {
+  const raw = (input || '').trim();
+  if (!raw) return { videoId: null, message: 'Paste a YouTube link first.' };
+  const id = extractYouTubeVideoId(raw);
+  if (id) return { videoId: id, message: '' };
+
+  try {
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    const host = u.hostname.replace(/^www\./, '').replace(/^m\./, '').replace(/^music\./, '');
+    const isYt = host === 'youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com';
+    if (!host.includes('.')) {
+      return {
+        videoId: null,
+        message: 'That does not look like a link. Copy it from the YouTube address bar or the Share button.',
+      };
+    }
+    if (!isYt) {
+      return {
+        videoId: null,
+        message: 'Only YouTube links work. Spotify, SoundCloud, Apple Music and other sites are not supported.',
+      };
+    }
+    const first = u.pathname.split('/').filter(Boolean)[0] || '';
+    if (first === 'playlist' || (u.searchParams.get('list') && !u.searchParams.get('v'))) {
+      return {
+        videoId: null,
+        message: 'That is a playlist link. Open the one song you want and copy the link from that video.',
+      };
+    }
+    if (first === 'channel' || first === 'c' || first === 'user' || first.startsWith('@')) {
+      return {
+        videoId: null,
+        message: 'That is a channel link. Open the one song you want and copy the link from that video.',
+      };
+    }
+    return {
+      videoId: null,
+      message: 'That YouTube link does not point to a single video. Open the song and copy its link.',
+    };
+  } catch {
+    return {
+      videoId: null,
+      message: 'That does not look like a link. Copy it from the YouTube address bar or the Share button.',
+    };
+  }
+}
+
 // Backend Conversion & Cloud Storage (Triggered ONLY After Admin Approval):
 // 1. Rips audio with yt-dlp & converts to .mp3 temporarily on server
 // 2. Uploads .mp3 directly to Google Drive folder using Google Drive API
@@ -1611,9 +1764,10 @@ app.post('/api/admin/requests/:id/approve-and-process', async (req: Request, res
       return res.status(400).json({ error: 'No YouTube link attached to this request' });
     }
 
-    const videoId = extractYouTubeVideoId(youtubeUrl);
+    const linkCheck = checkYouTubeLink(youtubeUrl);
+    const videoId = linkCheck.videoId;
     if (!videoId) {
-      return res.status(400).json({ error: 'That does not look like a valid YouTube link.' });
+      return res.status(400).json({ error: linkCheck.message });
     }
 
     // Check the video exists and allows embedding (YouTube oEmbed returns 401/403 when embedding is off)
@@ -1953,6 +2107,9 @@ app.post('/api/admin/maintenance', async (req: Request, res: Response) => {
 // 1. Chat Requests
 app.get('/api/chat/requests', async (req: Request, res: Response) => {
   try {
+    if (!isAdminReq(req)) {
+      return res.json({ requests: await getChatRequestsForUserDb(getAuthUser(req).uid) });
+    }
     const { userId } = req.query;
     if (userId && typeof userId === 'string') {
       const userRequests = await getChatRequestsForUserDb(userId);
@@ -1968,7 +2125,9 @@ app.get('/api/chat/requests', async (req: Request, res: Response) => {
 
 app.post('/api/chat/requests', async (req: Request, res: Response) => {
   try {
-    const { senderId, senderUsername, receiverId, receiverUsername, reason } = req.body;
+    const { receiverId, receiverUsername, reason } = req.body;
+    const senderId = getAuthUser(req).uid;
+    const senderUsername = getAuthUser(req).username;
     if (!senderId || !receiverId) {
       return res.status(400).json({ error: 'Sender and receiver are required' });
     }
@@ -2041,6 +2200,12 @@ app.patch('/api/chat/requests/:id', async (req: Request, res: Response) => {
 app.delete('/api/chat/requests/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    if (!isAdminReq(req)) {
+      const item: any = await getChatRequestByIdDb(id);
+      if (!item || item.senderId !== getAuthUser(req).uid) {
+        return res.status(403).json({ error: 'You can only cancel your own requests' });
+      }
+    }
     await deleteChatRequestDb(id);
     res.json({ success: true });
   } catch (error: any) {
@@ -2052,6 +2217,9 @@ app.delete('/api/chat/requests/:id', async (req: Request, res: Response) => {
 // 2. Chat Threads
 app.get('/api/chat/threads', async (req: Request, res: Response) => {
   try {
+    if (!isAdminReq(req)) {
+      return res.json({ threads: await getChatThreadsForUserDb(getAuthUser(req).uid) });
+    }
     const { userId, mode } = req.query;
     if (userId && typeof userId === 'string') {
       const user = await getUserByUid(userId);
@@ -2141,8 +2309,7 @@ app.delete('/api/chat/threads/:id', async (req: Request, res: Response) => {
 app.post('/api/chat/threads/:id/hide', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const userId = getAuthUser(req).uid;
     await hideChatThreadForUserDb(id, userId);
     res.json({ success: true });
   } catch (error: any) {
@@ -2154,8 +2321,9 @@ app.post('/api/chat/threads/:id/hide', async (req: Request, res: Response) => {
 // Suspended user creates/retrieves direct appeal thread with Admin
 app.post('/api/chat/appeal', async (req: Request, res: Response) => {
   try {
-    const { userId, username } = req.body;
-    if (!userId || !username) return res.status(400).json({ error: 'userId and username required' });
+    // A suspended person can only open an appeal for their own account
+    const userId = getAuthUser(req).uid;
+    const username = getAuthUser(req).username;
     const user = await getUserByUid(userId);
     if (!user) {
       return res.status(404).json({ error: 'User account not found' });
@@ -2172,6 +2340,13 @@ app.post('/api/chat/appeal', async (req: Request, res: Response) => {
 app.get('/api/chat/messages/:threadId', async (req: Request, res: Response) => {
   try {
     const { threadId } = req.params;
+    const me = getAuthUser(req);
+    if (me.role !== 'admin') {
+      const thread: any = await getChatThreadByIdDb(threadId);
+      if (!thread || (thread.user1Id !== me.uid && thread.user2Id !== me.uid)) {
+        return res.status(403).json({ error: 'You are not part of this conversation' });
+      }
+    }
     const messages = await getChatMessagesDb(threadId);
     res.json({ messages });
   } catch (error: any) {
@@ -2205,15 +2380,23 @@ app.get('/api/chat/messages-all', async (_req: Request, res: Response) => {
 
 app.post('/api/chat/messages', async (req: Request, res: Response) => {
   try {
-    const { threadId, senderId, senderUsername, receiverId, content } = req.body;
-    if (!threadId || !senderId || !content || !content.trim()) {
-      return res.status(400).json({ error: 'Thread, sender, and content are required' });
+    const { threadId, content } = req.body;
+    const me = getAuthUser(req);
+    const senderId = me.uid;
+    const senderUsername = me.username;
+    if (!threadId || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'Thread and content are required' });
     }
 
     const thread = await getChatThreadByIdDb(threadId);
     if (!thread) {
       return res.status(404).json({ error: 'Conversation thread not found' });
     }
+    // Only people in the conversation (or an admin) can post in it
+    if (me.role !== 'admin' && thread.user1Id !== me.uid && thread.user2Id !== me.uid) {
+      return res.status(403).json({ error: 'You are not part of this conversation' });
+    }
+    const receiverId = thread.user1Id === me.uid ? thread.user2Id : thread.user1Id;
 
     // If appeal thread: check participants
     if (thread.isAppealThread) {
@@ -2242,7 +2425,7 @@ app.post('/api/chat/messages', async (req: Request, res: Response) => {
       senderId,
       senderUsername: senderUsername || sender?.username || 'User',
       receiverId: receiverId || '',
-      content: content.trim(),
+      content: content.trim().slice(0, 2000),
     });
 
     res.json({ success: true, message: created });
@@ -2293,6 +2476,50 @@ app.delete('/api/chat/pairing-blocks/:id', async (req: Request, res: Response) =
   }
 });
 
+// ----------------- YOUTUBE LINK CHECK -----------------
+// Tells the person (or admin) right away whether a pasted link will work
+app.get('/api/youtube/preview', async (req: Request, res: Response) => {
+  const check = checkYouTubeLink(String(req.query.url || ''));
+  if (!check.videoId) {
+    return res.json({ valid: false, reason: check.message });
+  }
+  const videoId = check.videoId;
+  const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  try {
+    const oembed = await fetch(
+      `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (oembed.status === 401 || oembed.status === 403) {
+      return res.json({
+        valid: false,
+        videoId,
+        thumbnail,
+        reason:
+          'The owner of this video does not allow it to be played on other sites. Try a different upload, such as the artist\'s official audio or a lyric video.',
+      });
+    }
+    if (oembed.status === 404) {
+      return res.json({ valid: false, videoId, reason: 'That video was not found, or it is private.' });
+    }
+    if (!oembed.ok) {
+      // YouTube did not answer; the link itself looks fine
+      return res.json({ valid: true, videoId, thumbnail, title: '', author: '', checked: false });
+    }
+    const info: any = await oembed.json();
+    res.json({
+      valid: true,
+      videoId,
+      thumbnail,
+      title: String(info?.title || ''),
+      author: String(info?.author_name || '').replace(/\s*-\s*Topic$/i, ''),
+      checked: true,
+    });
+  } catch (err: any) {
+    res.json({ valid: true, videoId, thumbnail, title: '', author: '', checked: false });
+  }
+});
+
 // ----------------- FEATURE REQUESTS & BUG REPORTS -----------------
 const feedbackHits = new Map<string, number[]>();
 
@@ -2308,7 +2535,10 @@ async function isAdminUserId(uid: unknown): Promise<boolean> {
 
 app.post('/api/feedback', async (req: Request, res: Response) => {
   try {
-    const { type, title, details, area, userId, username, userAgent } = req.body || {};
+    const { type, title, details, area, userAgent } = req.body || {};
+    const authed = getAuthUser(req);
+    const userId: string | undefined = authed?.uid;
+    const username: string = authed?.username || 'Guest';
     if (type !== 'feature' && type !== 'bug') {
       return res.status(400).json({ error: 'Type must be feature or bug' });
     }
@@ -2350,7 +2580,7 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
 
 app.get('/api/admin/feedback', async (req: Request, res: Response) => {
   try {
-    if (!(await isAdminUserId(req.query.userId))) {
+    if (!isAdminReq(req)) {
       return res.status(403).json({ error: 'Admin only' });
     }
     res.json({ items: await listFeedbackDb() });
@@ -2363,7 +2593,7 @@ app.get('/api/admin/feedback', async (req: Request, res: Response) => {
 app.patch('/api/admin/feedback/:id', async (req: Request, res: Response) => {
   try {
     const { userId, status, adminNote } = req.body || {};
-    if (!(await isAdminUserId(userId))) return res.status(403).json({ error: 'Admin only' });
+    if (!isAdminReq(req)) return res.status(403).json({ error: 'Admin only' });
     if (status && !['new', 'in_progress', 'done', 'declined'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
@@ -2381,7 +2611,7 @@ app.patch('/api/admin/feedback/:id', async (req: Request, res: Response) => {
 
 app.delete('/api/admin/feedback/:id', async (req: Request, res: Response) => {
   try {
-    if (!(await isAdminUserId(req.query.userId))) return res.status(403).json({ error: 'Admin only' });
+    if (!isAdminReq(req)) return res.status(403).json({ error: 'Admin only' });
     await deleteFeedbackDb(req.params.id);
     res.json({ success: true });
   } catch (error: any) {
@@ -2435,6 +2665,9 @@ app.get('/api/admin/database/status', async (_req: Request, res: Response) => {
       activeHosting: isSql ? 'supabase' : 'local_file',
       engine: isSql ? 'Supabase / PostgreSQL Cloud Database' : 'Local Persistent Storage (local_db.json)',
       isSqlConnected: isSql,
+      persistent: isSql,
+      connectionSource: getDatabaseHealth().source,
+      lastError: isSql ? null : getDatabaseHealth().lastError,
       configuredConnectionString: maskedConn,
       supabaseUrl: process.env.SUPABASE_URL || null,
       hasCredentials: Boolean(connStr || process.env.SUPABASE_URL),
@@ -2609,6 +2842,40 @@ async function startServer() {
     await ensureTables();
   } catch (err) {
     console.warn('[Schema] ensureTables failed:', err);
+  }
+  // Admin account: optionally (re)set from ADMIN_PASSWORD, and warn about the default password
+  try {
+    const adminName = (process.env.ADMIN_USERNAME || 'admin').trim();
+    const adminPw = process.env.ADMIN_PASSWORD;
+    if (adminPw && adminPw.length >= 8) {
+      const hash = await hashPasswordSecure(adminPw);
+      const existingAdmin = await getUserByUsername(adminName);
+      if (existingAdmin) {
+        await updateUserDb(existingAdmin.uid, {
+          passwordHash: hash,
+          role: 'admin',
+          isApproved: true,
+          isSuspended: false,
+          temporaryPasswordAssigned: false,
+        });
+      } else {
+        await createUserDb({
+          uid: `user-admin-${Date.now()}`,
+          username: adminName,
+          passwordHash: hash,
+          role: 'admin',
+          isApproved: true,
+          note: 'Created from ADMIN_PASSWORD',
+        });
+      }
+      console.log(`[Security] Password for admin account "${adminName}" was set from ADMIN_PASSWORD.`);
+    }
+    const defaultAdmin = await getUserByUsername('admin');
+    if (defaultAdmin && (await verifyPassword('admin123', defaultAdmin.passwordHash)).ok) {
+      console.warn('[Security] WARNING: the "admin" account still uses the default password. Change it now.');
+    }
+  } catch (err) {
+    console.warn('[Security] Admin account check skipped:', err);
   }
   // Ensure schema extensions exist
   await initDatabaseSchemaExtensions();
