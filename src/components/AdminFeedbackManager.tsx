@@ -58,6 +58,23 @@ export const AdminFeedbackManager: React.FC = () => {
     }
   };
 
+  const clearClosed = async () => {
+    const closed = items.filter((i) => i.status === 'done' || i.status === 'declined').length;
+    if (closed === 0) {
+      setMessage('There are no completed or declined items to clear.');
+      return;
+    }
+    if (!window.confirm(`Remove ${closed} completed / declined item${closed === 1 ? '' : 's'} now?`)) return;
+    const removed = await storage.clearClosedFeedback();
+    setMessage(`Removed ${removed} item${removed === 1 ? '' : 's'}.`);
+    load();
+  };
+
+  const hoursLeft = (item: FeedbackItem) => {
+    const closedAt = new Date(item.statusChangedAt || item.updatedAt || item.createdAt).getTime();
+    return Math.max(0, Math.ceil((closedAt + 24 * 3600_000 - Date.now()) / 3600_000));
+  };
+
   const remove = async (item: FeedbackItem) => {
     if (!currentUser) return;
     if (!window.confirm(`Delete "${item.title}"? This cannot be undone.`)) return;
@@ -89,17 +106,28 @@ export const AdminFeedbackManager: React.FC = () => {
           <div>
             <h2 className="text-lg font-bold text-white font-display mb-1">Feature Requests & Bug Reports</h2>
             <p className="text-xs text-slate-400">
-              Everything users send from the Request popup lands here. {newCount} new.
+              Everything users send from the Request popup lands here. {newCount} new. Users see the status you set and get a
+              notification when it changes. Done and declined items remove themselves after 24 hours.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={load}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900/70 border border-white/10 text-xs font-semibold text-slate-200 hover:text-white"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={clearClosed}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900/70 border border-white/10 text-xs font-semibold text-slate-200 hover:text-white"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Clear finished now
+            </button>
+            <button
+              type="button"
+              onClick={load}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900/70 border border-white/10 text-xs font-semibold text-slate-200 hover:text-white"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 mb-5">
@@ -151,6 +179,12 @@ export const AdminFeedbackManager: React.FC = () => {
                 </div>
 
                 <p className="text-xs text-slate-200 whitespace-pre-wrap break-words leading-relaxed">{item.details}</p>
+
+                {(item.status === 'done' || item.status === 'declined') && (
+                  <p className="text-[11px] text-amber-300/90">
+                    Removes itself in about {hoursLeft(item)} hour{hoursLeft(item) === 1 ? '' : 's'}.
+                  </p>
+                )}
 
                 {item.userAgent && (
                   <p className="text-[10px] text-slate-500 break-all">Browser: {item.userAgent}</p>
