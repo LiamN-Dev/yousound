@@ -54,11 +54,6 @@ export const LoginGate: React.FC = () => {
     }
   };
 
-  const handleQuickFillAdmin = () => {
-    setUsername('admin');
-    setPassword('admin123');
-    setErrorMsg(null);
-  };
 
   const handleRequest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -227,14 +222,7 @@ export const LoginGate: React.FC = () => {
 
             {/* Quick Demo Credentials Assistant */}
             <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
-              <button
-                type="button"
-                onClick={handleQuickFillAdmin}
-                className="text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 font-medium"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span>Quick-fill Admin (admin / admin123)</span>
-              </button>
+              <span />
 
               <button
                 type="button"
@@ -349,4 +337,3 @@ export const LoginGate: React.FC = () => {
     </div>
   );
 };
-
