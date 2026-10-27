@@ -39,7 +39,7 @@ export function isYoutubeSrcHidden(src: string | undefined | null): boolean {
 
 let apiPromise: Promise<any> | null = null;
 
-function loadYouTubeApi(): Promise<any> {
+export function loadYouTubeApi(): Promise<any> {
   if (typeof window === 'undefined') return Promise.reject(new Error('No window'));
   if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
   if (apiPromise) return apiPromise;
