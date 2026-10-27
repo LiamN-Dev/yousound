@@ -23,6 +23,7 @@ import { PendingApprovalScreen } from './components/PendingApprovalScreen';
 import { SuspendedScreen } from './components/SuspendedScreen';
 import { ChatHub } from './components/ChatHub';
 import { ChatSideNotification } from './components/ChatSideNotification';
+import { FeedbackNotifier } from './components/FeedbackNotifier';
 import { TemporaryPasswordModal } from './components/TemporaryPasswordModal';
 import { Song } from './types';
 import { Music, ListPlus, KeyRound } from 'lucide-react';
@@ -40,6 +41,7 @@ const MainAppContent: React.FC = () => {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isSongRequestOpen, setIsSongRequestOpen] = useState(false);
+  const [requestInitialMode, setRequestInitialMode] = useState<'song' | 'feature' | 'bug' | 'mine'>('song');
   const [uploaderEditSong, setUploaderEditSong] = useState<Song | null>(null);
   const [playlistSongTarget, setPlaylistSongTarget] = useState<Song | null>(null);
   const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
@@ -63,6 +65,17 @@ const MainAppContent: React.FC = () => {
       .filter((s) => s.isSpotlight)
       .sort((a, b) => (a.spotlightOrder ?? 0) - (b.spotlightOrder ?? 0));
   }, [allSongs, adminAllSongs, isAdmin]);
+
+  // The update pop-up can ask the app to open the request window on "My Reports"
+  useEffect(() => {
+    const open = (e: Event) => {
+      const mode = (e as CustomEvent).detail?.mode || 'mine';
+      setRequestInitialMode(mode);
+      setIsSongRequestOpen(true);
+    };
+    window.addEventListener('yousong:open-requests', open);
+    return () => window.removeEventListener('yousong:open-requests', open);
+  }, []);
 
   // If the currently selected genre no longer exists in any song, reset to 'All'
   useEffect(() => {
@@ -299,8 +312,15 @@ const MainAppContent: React.FC = () => {
       {/* User Song Request Modal */}
       <SongRequestModal
         isOpen={isSongRequestOpen}
-        onClose={() => setIsSongRequestOpen(false)}
+        initialMode={requestInitialMode}
+        onClose={() => {
+          setIsSongRequestOpen(false);
+          setRequestInitialMode('song');
+        }}
       />
+
+      {/* Pop-up when an admin updates one of the person's feature requests / bug reports */}
+      <FeedbackNotifier />
 
       {/* Edit Song Modal from Uploader */}
       {uploaderEditSong && (
