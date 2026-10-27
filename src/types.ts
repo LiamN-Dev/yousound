@@ -261,4 +261,8 @@ export interface FeedbackItem {
   status: FeedbackStatus;
   adminNote?: string | null;
   createdAt: string;
+  updatedAt: string;
+  statusChangedAt?: string | null;
+  userSeenAt?: string | null;
+  unread?: boolean;
 }
