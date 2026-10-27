@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAudio } from '../context/AudioContext';
+import { YouTubeTestPlayer } from './YouTubeTestPlayer';
 import { useAuth } from '../context/AuthContext';
 import { SongRequest } from '../types';
 import { connectGoogleDrive, getDriveAccessToken } from '../lib/firebase';
@@ -69,7 +70,9 @@ export const AdminPipelineManager: React.FC = () => {
   const [volume, setVolume] = useState<number>(0.85);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const { playSong } = useAudio();
+  const { playSong, isPlaying: mainPlayerPlaying, togglePlay } = useAudio();
+  // Which staged request currently has its inline video preview open
+  const [testPlayerFor, setTestPlayerFor] = useState<string | null>(null);
   const [hideVideoFor, setHideVideoFor] = useState<Record<string, boolean>>({});
 
   // Decline Modal State
@@ -204,16 +207,9 @@ export const AdminPipelineManager: React.FC = () => {
       audioRef.current?.pause();
       setActivePlayingId(null);
       setIsPlaying(false);
-      playSong({
-        id: `staging-${req.id}`,
-        title: req.songTitle,
-        artist: req.artist || 'Unknown Artist',
-        genre: req.genre || '',
-        duration: req.duration || 180,
-        audioUrl: audioSource,
-        coverUrl: req.coverUrl || '',
-        addedAt: new Date().toISOString(),
-      });
+      // Stop the main player so two things never play at once
+      if (mainPlayerPlaying) togglePlay();
+      setTestPlayerFor((prev) => (prev === req.id ? null : req.id));
       return;
     }
 
@@ -604,7 +600,9 @@ export const AdminPipelineManager: React.FC = () => {
           ) : (
             <div className="space-y-4">
               {stagingRequests.map((req) => {
-                const isThisPlaying = activePlayingId === req.id && isPlaying;
+                const ytId = (req.stagingAudioUrl || req.audioUrl || '').match(/^youtube:([A-Za-z0-9_-]{11})/)?.[1] || null;
+                const isOpenPreview = testPlayerFor === req.id;
+                const isThisPlaying = ytId ? isOpenPreview : activePlayingId === req.id && isPlaying;
                 const audioDurationSec = req.duration || duration || 180;
 
                 return (
@@ -686,15 +684,15 @@ export const AdminPipelineManager: React.FC = () => {
                         <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
                           <span className="flex items-center gap-1.5 text-purple-300 font-bold">
                             <Radio className="w-3 h-3" />
-                            <span>{isThisPlaying ? 'Playing...' : 'Ready for Audio Verification'}</span>
+                            <span>{ytId ? (isOpenPreview ? 'Video preview open' : 'Press play to preview the video') : isThisPlaying ? 'Playing...' : 'Ready for Audio Verification'}</span>
                           </span>
                           <span>
-                            {activePlayingId === req.id ? formatSeconds(currentTime) : '0:00'} / {formatSeconds(audioDurationSec)}
+                            {ytId ? `Length: ${formatSeconds(audioDurationSec)}` : `${activePlayingId === req.id ? formatSeconds(currentTime) : '0:00'} / ${formatSeconds(audioDurationSec)}`}
                           </span>
                         </div>
 
-                        {/* Seeker */}
-                        <input
+                        {/* Seeker (not used for YouTube; the video has its own controls) */}
+                        {!ytId && <input
                           type="range"
                           min={0}
                           max={audioDurationSec}
@@ -702,23 +700,37 @@ export const AdminPipelineManager: React.FC = () => {
                           value={activePlayingId === req.id ? currentTime : 0}
                           onChange={(e) => handleSeek(parseFloat(e.target.value))}
                           className="w-full accent-purple-400 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-                        />
+                        />}
                       </div>
 
                       {/* Stream Direct Link Indicator */}
                       {req.audioUrl && (
                         <a
-                          href={req.audioUrl}
+                          href={ytId ? `https://www.youtube.com/watch?v=${ytId}` : req.audioUrl}
                           target="_blank"
                           rel="noreferrer"
                           className="px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-[10px] text-cyan-400 hover:underline flex items-center gap-1 shrink-0"
                           title="Open direct audio stream link"
                         >
                           <ExternalLink className="w-3 h-3" />
-                          <span>Stream URL</span>
+                          <span>{ytId ? 'Open on YouTube' : 'Stream URL'}</span>
                         </a>
                       )}
                     </div>
+
+                    {ytId && isOpenPreview && (
+                      <div className="pt-1">
+                        <YouTubeTestPlayer
+                          videoId={ytId}
+                          onDuration={(sec) => {
+                            // Save the real length so the published song shows the right time
+                            if (Math.abs((req.duration || 0) - sec) >= 2) {
+                              adminUpdateRequest(req.id, { duration: sec });
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
