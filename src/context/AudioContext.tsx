@@ -103,6 +103,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const handleTrackEndRef = useRef<() => void>(() => {});
   const currentSongRef = useRef<Song | null>(null);
+  // The audio listeners below are created once, so they read the latest user role through a ref
+  const userRoleRef = useRef<string | undefined>(currentUser?.role);
+  userRoleRef.current = currentUser?.role;
 
   useEffect(() => {
     currentSongRef.current = currentSong;
@@ -125,7 +128,15 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Self-heal: If measured duration differs from song's labeled duration by >= 2 seconds, update it permanently!
         if (currentSongRef.current && measured > 0 && Math.abs((currentSongRef.current.duration || 0) - measured) >= 2) {
           console.log(`Self-healing duration for "${currentSongRef.current.title}": ${currentSongRef.current.duration}s -> ${measured}s`);
-          storage.updateSong(currentSongRef.current.id, { duration: measured });
+          const healed = currentSongRef.current;
+          if (healed.id.startsWith('staging-')) {
+            // Admin test play of a not-yet-published song: the test player saves it on the request
+          } else if (userRoleRef.current === 'admin') {
+            storage.updateSong(healed.id, { duration: measured });
+          } else {
+            // Any listener's player can supply the real length when the song only has a placeholder
+            storage.reportSongDuration(healed.id, measured);
+          }
         }
       }
     };
