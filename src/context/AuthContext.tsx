@@ -156,6 +156,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (res.success && res.user) {
       setCurrentUser(res.user);
       refreshState();
+      // Load the library, playlists, requests and settings for the new session right away,
+      // so everything is there as soon as the login screen disappears (no refresh needed).
+      try {
+        await Promise.race([storage.syncWithServer(), new Promise((resolve) => setTimeout(resolve, 5000))]);
+      } catch (_) {}
+      refreshState();
+      // One more pass shortly after, in case the first answers were still on their way
+      setTimeout(() => {
+        storage.syncWithServer().then(refreshState).catch(() => {});
+      }, 1500);
     }
     return res;
   };
