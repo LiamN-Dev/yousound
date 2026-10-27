@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useSyncExternalStore } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { storage } from '../services/storage';
+import { FeedbackItem } from '../types';
+import { markAllSeen, refreshFeedback, getFeedbackState, subscribeFeedback } from '../services/feedbackNotifications';
 import {
   X,
   Music,
@@ -18,11 +20,14 @@ import {
   Radio,
   Lightbulb,
   Bug,
+  ListChecks,
 } from 'lucide-react';
 
 interface SongRequestModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Which section to show when the popup opens */
+  initialMode?: 'song' | 'feature' | 'bug' | 'mine';
 }
 
 const PRESET_COVERS = [
@@ -47,6 +52,125 @@ const PRESET_COVERS = [
     url: 'https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=500&auto=format&fit=crop&q=80',
   },
 ];
+
+const STAGE_LABELS = ['Submitted', 'In progress', 'Finished'];
+
+function stageIndex(status: string): number {
+  if (status === 'new') return 0;
+  if (status === 'in_progress') return 1;
+  return 2; // done or declined
+}
+
+function timeAgo(iso?: string | null): string {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.max(0, Math.round(diff / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+function hoursLeft(item: FeedbackItem): number {
+  const closedAt = new Date(item.statusChangedAt || item.updatedAt || item.createdAt).getTime();
+  return Math.max(0, Math.ceil((closedAt + 24 * 3600_000 - Date.now()) / 3600_000));
+}
+
+/** The person's own feature ideas and bug reports, with the stage each one is at */
+const MyFeedbackList: React.FC = () => {
+  const [items, setItems] = useState<FeedbackItem[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const list = await storage.getMyFeedback();
+      if (cancelled) return;
+      setItems(list);
+      // Opening this list counts as having seen every update
+      await markAllSeen();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (items === null) return <p className="text-xs text-slate-400">Loading your reports...</p>;
+
+  if (items.length === 0) {
+    return (
+      <div className="text-center py-8 text-xs text-slate-400 leading-relaxed">
+        <p className="font-semibold text-slate-300 mb-1">Nothing here yet</p>
+        <p>Feature ideas and bug reports you send will show up here so you can follow their progress.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-slate-500 leading-relaxed">
+        You will get a notification when an admin updates one of these. Finished and declined items are removed 24 hours
+        after they are closed.
+      </p>
+      {items.map((item) => {
+        const stage = stageIndex(item.status);
+        const declined = item.status === 'declined';
+        return (
+          <div key={item.id} className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-bold text-slate-400">
+                  {item.type === 'bug' ? <Bug className="w-3 h-3 text-rose-300" /> : <Lightbulb className="w-3 h-3 text-amber-300" />}
+                  <span>{item.type === 'bug' ? 'Bug report' : 'Feature idea'}</span>
+                  {item.unread && <span className="px-1.5 py-0.5 rounded-full bg-cyan-500 text-slate-950">Updated</span>}
+                </div>
+                <p className="text-xs font-bold text-white mt-1 break-words">{item.title}</p>
+              </div>
+              <span className="text-[10px] text-slate-500 shrink-0">{timeAgo(item.updatedAt)}</span>
+            </div>
+
+            {/* Progress tracker */}
+            <div className="flex items-center">
+              {STAGE_LABELS.map((label, i) => {
+                const reached = i <= stage;
+                const isLast = i === STAGE_LABELS.length - 1;
+                const text = isLast && declined ? 'Declined' : isLast && item.status === 'done' ? 'Done' : label;
+                const color = reached
+                  ? isLast && declined
+                    ? 'bg-slate-500 border-slate-400'
+                    : isLast
+                      ? 'bg-emerald-500 border-emerald-300'
+                      : 'bg-cyan-500 border-cyan-300'
+                  : 'bg-slate-900 border-slate-700';
+                return (
+                  <React.Fragment key={label}>
+                    <div className="flex flex-col items-center gap-1 min-w-[64px]">
+                      <div className={`w-3.5 h-3.5 rounded-full border-2 ${color}`} />
+                      <span className={`text-[10px] font-semibold ${reached ? 'text-slate-200' : 'text-slate-500'}`}>{text}</span>
+                    </div>
+                    {!isLast && <div className={`flex-1 h-0.5 -mt-4 ${i < stage ? 'bg-cyan-500' : 'bg-slate-800'}`} />}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+
+            {item.adminNote && (
+              <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-[11px] text-cyan-100 break-words">
+                <span className="font-bold">Message from the admins:</span> {item.adminNote}
+              </div>
+            )}
+
+            {(item.status === 'done' || item.status === 'declined') && (
+              <p className="text-[10px] text-slate-500">
+                This will be removed from your list in about {hoursLeft(item)} hour{hoursLeft(item) === 1 ? '' : 's'}.
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 const BUG_AREAS = ['Library', 'Playlists', 'Favorites', 'Chat', 'Music player / video', 'Requests', 'Login / account', 'Admin panel', 'Other'];
 
@@ -78,13 +202,14 @@ const FeedbackForm: React.FC<{ kind: 'feature' | 'bug' }> = ({ kind }) => {
     });
     setSending(false);
     if (res.success) {
+      refreshFeedback().catch(() => {});
       setTitle('');
       setDetails('');
       setNotice({
         ok: true,
         text: isBug
-          ? 'Thanks! Your bug report was sent to the admins.'
-          : 'Thanks! Your feature idea was sent to the admins.',
+          ? 'Thanks! Your bug report was sent to the admins. You can follow its progress under "My Reports".'
+          : 'Thanks! Your feature idea was sent to the admins. You can follow its progress under "My Reports".',
       });
     } else {
       setNotice({ ok: false, text: res.error || 'Something went wrong. Please try again.' });
@@ -172,9 +297,15 @@ const FeedbackForm: React.FC<{ kind: 'feature' | 'bug' }> = ({ kind }) => {
   );
 };
 
-export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onClose }) => {
+export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onClose, initialMode = 'song' }) => {
   const { currentUser, songRequests, submitSongRequest } = useAuth();
-  const [mode, setMode] = useState<'song' | 'feature' | 'bug'>('song');
+  const [mode, setMode] = useState<'song' | 'feature' | 'bug' | 'mine'>(initialMode);
+  const feedbackState = useSyncExternalStore(subscribeFeedback, getFeedbackState);
+
+  // Each time the popup opens, start on the requested section
+  useEffect(() => {
+    if (isOpen) setMode(initialMode);
+  }, [isOpen, initialMode]);
   const [activeTab, setActiveTab] = useState<'submit' | 'my-requests'>('submit');
 
   // Form fields as requested:
@@ -302,11 +433,12 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
         </div>
 
         {/* What do you want to send? */}
-        <div className="grid grid-cols-3 gap-2 mb-5 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5 text-xs">
           {([
             { id: 'song', label: 'Song', Icon: Music },
             { id: 'feature', label: 'Site Feature', Icon: Lightbulb },
             { id: 'bug', label: 'Report a Bug', Icon: Bug },
+            { id: 'mine', label: 'My Reports', Icon: ListChecks },
           ] as const).map(({ id, label, Icon }) => (
             <button
               key={id}
@@ -320,11 +452,18 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
             >
               <Icon className="w-3.5 h-3.5" />
               <span>{label}</span>
+              {id === 'mine' && feedbackState.unreadCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-cyan-500 text-slate-950 text-[10px] font-bold">
+                  {feedbackState.unreadCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
 
-        {mode !== 'song' ? (
+        {mode === 'mine' ? (
+          <MyFeedbackList />
+        ) : mode !== 'song' ? (
           <FeedbackForm key={mode} kind={mode} />
         ) : (
           <>
