@@ -87,8 +87,12 @@ import {
 import {
   createFeedbackDb,
   listFeedbackDb,
+  listFeedbackForUserDb,
+  markFeedbackSeenDb,
   updateFeedbackDb,
   deleteFeedbackDb,
+  purgeClosedFeedbackDb,
+  clearClosedFeedbackDb,
 } from './src/db/feedback.ts';
 import { extractAudioFromYouTube, uploadMp3ToGoogleDrive } from './src/services/audioPipeline.ts';
 import {
@@ -1300,6 +1304,27 @@ app.post('/api/songs', async (req: Request, res: Response) => {
   }
 });
 
+// Any listener's player can report a song's real length, but only while it is still a placeholder
+app.post('/api/songs/:id/duration', async (req: Request, res: Response) => {
+  try {
+    const seconds = Math.round(Number(req.body?.seconds));
+    if (!Number.isFinite(seconds) || seconds < 5 || seconds > 43200) {
+      return res.status(400).json({ error: 'Invalid duration' });
+    }
+    const song = (await getSongsDb()).find((s: any) => s.id === req.params.id);
+    if (!song) return res.status(404).json({ error: 'Song not found' });
+    const current = Number(song.duration) || 0;
+    const placeholder = current <= 0 || current === 180;
+    if (!isAdminReq(req) && !placeholder) return res.json({ success: true, unchanged: true });
+    if (Math.abs(current - seconds) < 2) return res.json({ success: true, unchanged: true });
+    await updateSongDb(req.params.id, { duration: seconds });
+    res.json({ success: true, duration: seconds });
+  } catch (error: any) {
+    console.error('Report duration error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.patch('/api/songs/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -1631,6 +1656,7 @@ app.patch('/api/admin/requests/:id', async (req: Request, res: Response) => {
       genre,
       status,
       adminNote,
+      duration,
     } = req.body;
 
     const existingReq = await getRequestByIdDb(id);
@@ -1647,6 +1673,7 @@ app.patch('/api/admin/requests/:id', async (req: Request, res: Response) => {
     if (genre !== undefined) updates.genre = genre.trim();
     if (adminNote !== undefined) updates.adminNote = adminNote;
     if (status !== undefined) updates.status = status;
+    if (typeof duration === 'number' && duration >= 5 && duration <= 43200) updates.duration = Math.round(duration);
 
     const updated = await updateRequestFullDb(id, updates);
     console.log(`[SongPipeline] Admin updated request metadata for ${id}: "${updated?.songTitle}" - "${updated?.artist}"`);
@@ -2661,6 +2688,35 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
   }
 });
 
+// A person's own reports, with progress and an "unread" flag for anything that changed
+app.get('/api/feedback/mine', async (req: Request, res: Response) => {
+  try {
+    const items = await listFeedbackForUserDb(getAuthUser(req).uid);
+    res.json({ items });
+  } catch (error: any) {
+    console.error('My feedback error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/feedback/mine/seen', async (req: Request, res: Response) => {
+  try {
+    await markFeedbackSeenDb(getAuthUser(req).uid);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/feedback/clear-closed', async (_req: Request, res: Response) => {
+  try {
+    const removed = await clearClosedFeedbackDb();
+    res.json({ success: true, removed });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/admin/feedback', async (req: Request, res: Response) => {
   try {
     if (!isAdminReq(req)) {
@@ -2927,6 +2983,10 @@ async function startServer() {
   } catch (err) {
     console.warn('[Schema] ensureTables failed:', err);
   }
+  // Finished feature requests / bug reports disappear 24 hours after they are completed or declined
+  purgeClosedFeedbackDb().catch(() => {});
+  setInterval(() => purgeClosedFeedbackDb().catch(() => {}), 60 * 60 * 1000);
+
   // Admin account: optionally (re)set from ADMIN_PASSWORD, and warn about the default password
   try {
     const adminName = (process.env.ADMIN_USERNAME || 'admin').trim();
