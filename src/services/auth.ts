@@ -172,6 +172,7 @@ const RULES: Rule[] = [
 
   // Regular members
   ['POST', /^\/api\/songs\/[^/]+\/play$/, 'member'],
+  ['POST', /^\/api\/songs\/[^/]+\/duration$/, 'member'],
   ['POST', /^\/api\/users\/activity\/listen$/, 'member'],
   ['GET', /^\/api\/users$/, 'member'],
   ['POST', /^\/api\/chat\/threads\/[^/]+\/hide$/, 'member'],
