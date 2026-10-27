@@ -130,29 +130,70 @@ export const AdminPanel: React.FC = () => {
   const [maintFeedback, setMaintFeedback] = useState<string | null>(null);
 
   // Banner & Branding State
-  const [bannerEnabled, setBannerEnabled] = useState(bannerConfig.enabled);
-  const [bannerVersion, setBannerVersion] = useState(bannerConfig.versionName);
-  const [bannerSlogan, setBannerSlogan] = useState(bannerConfig.sloganText);
-  const [bannerTheme, setBannerTheme] = useState<BannerColorTheme>(bannerConfig.colorTheme);
-  const [customGradientFrom, setCustomGradientFrom] = useState(bannerConfig.customGradientFrom || '#06b6d4');
-  const [customGradientTo, setCustomGradientTo] = useState(bannerConfig.customGradientTo || '#6366f1');
-  const [useCustomColors, setUseCustomColors] = useState(!!(bannerConfig.customGradientFrom && bannerConfig.customGradientTo));
-  const [bannerRibbonEnabled, setBannerRibbonEnabled] = useState(bannerConfig.ribbonEnabled);
-  const [bannerRibbonNotice, setBannerRibbonNotice] = useState(bannerConfig.ribbonNotice);
+  const [bannerEnabled, setBannerEnabledRaw] = useState(bannerConfig.enabled);
+  const [bannerVersion, setBannerVersionRaw] = useState(bannerConfig.versionName);
+  const [bannerSlogan, setBannerSloganRaw] = useState(bannerConfig.sloganText);
+  const [bannerTheme, setBannerThemeRaw] = useState<BannerColorTheme>(bannerConfig.colorTheme);
+  const [customGradientFrom, setCustomGradientFromRaw] = useState(bannerConfig.customGradientFrom || '#06b6d4');
+  const [customGradientTo, setCustomGradientToRaw] = useState(bannerConfig.customGradientTo || '#6366f1');
+  const [useCustomColors, setUseCustomColorsRaw] = useState(!!(bannerConfig.customGradientFrom && bannerConfig.customGradientTo));
+  const [bannerRibbonEnabled, setBannerRibbonEnabledRaw] = useState(bannerConfig.ribbonEnabled);
+  const [bannerRibbonNotice, setBannerRibbonNoticeRaw] = useState(bannerConfig.ribbonNotice);
   const [bannerFeedback, setBannerFeedback] = useState<string | null>(null);
+  // Typing in the form marks it as being edited, so the background refresh cannot overwrite it
+  const bannerDirty = useRef(false);
+  const setBannerEnabled = (v: any) => {
+    bannerDirty.current = true;
+    setBannerEnabledRaw(v);
+  };
+  const setBannerVersion = (v: any) => {
+    bannerDirty.current = true;
+    setBannerVersionRaw(v);
+  };
+  const setBannerSlogan = (v: any) => {
+    bannerDirty.current = true;
+    setBannerSloganRaw(v);
+  };
+  const setBannerTheme = (v: any) => {
+    bannerDirty.current = true;
+    setBannerThemeRaw(v);
+  };
+  const setCustomGradientFrom = (v: any) => {
+    bannerDirty.current = true;
+    setCustomGradientFromRaw(v);
+  };
+  const setCustomGradientTo = (v: any) => {
+    bannerDirty.current = true;
+    setCustomGradientToRaw(v);
+  };
+  const setUseCustomColors = (v: any) => {
+    bannerDirty.current = true;
+    setUseCustomColorsRaw(v);
+  };
+  const setBannerRibbonEnabled = (v: any) => {
+    bannerDirty.current = true;
+    setBannerRibbonEnabledRaw(v);
+  };
+  const setBannerRibbonNotice = (v: any) => {
+    bannerDirty.current = true;
+    setBannerRibbonNoticeRaw(v);
+  };
 
-  // Synchronize bannerConfig when it updates from server/context
+  // Load the saved banner into the form. This only happens when the saved banner really changed,
+  // and never while you are in the middle of editing (it used to reset your text every few seconds).
+  const bannerSignature = JSON.stringify(bannerConfig);
   useEffect(() => {
-    setBannerEnabled(bannerConfig.enabled);
-    setBannerVersion(bannerConfig.versionName);
-    setBannerSlogan(bannerConfig.sloganText);
-    setBannerTheme(bannerConfig.colorTheme);
-    setCustomGradientFrom(bannerConfig.customGradientFrom || '#06b6d4');
-    setCustomGradientTo(bannerConfig.customGradientTo || '#6366f1');
-    setUseCustomColors(!!(bannerConfig.customGradientFrom && bannerConfig.customGradientTo));
-    setBannerRibbonEnabled(bannerConfig.ribbonEnabled);
-    setBannerRibbonNotice(bannerConfig.ribbonNotice);
-  }, [bannerConfig]);
+    if (bannerDirty.current) return;
+    setBannerEnabledRaw(bannerConfig.enabled);
+    setBannerVersionRaw(bannerConfig.versionName);
+    setBannerSloganRaw(bannerConfig.sloganText);
+    setBannerThemeRaw(bannerConfig.colorTheme);
+    setCustomGradientFromRaw(bannerConfig.customGradientFrom || '#06b6d4');
+    setCustomGradientToRaw(bannerConfig.customGradientTo || '#6366f1');
+    setUseCustomColorsRaw(!!(bannerConfig.customGradientFrom && bannerConfig.customGradientTo));
+    setBannerRibbonEnabledRaw(bannerConfig.ribbonEnabled);
+    setBannerRibbonNoticeRaw(bannerConfig.ribbonNotice);
+  }, [bannerSignature]);
 
   // Popups State
   const [popupTarget, setPopupTarget] = useState<'all' | string>('all');
@@ -413,6 +454,7 @@ export const AdminPanel: React.FC = () => {
       ribbonEnabled: bannerRibbonEnabled,
       ribbonNotice: bannerRibbonNotice,
     });
+    bannerDirty.current = false;
     setBannerFeedback('Branding and top banner settings updated across the site!');
     setTimeout(() => setBannerFeedback(null), 3000);
   };
@@ -497,15 +539,6 @@ export const AdminPanel: React.FC = () => {
               </div>
             </div>
 
-            <a
-              href="/api/admin/database/export"
-              download
-              className="flex items-center gap-2 px-3.5 py-3 rounded-2xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/30 text-xs font-bold transition-all hover:scale-105 active:scale-95 shadow-sm"
-              title="Download complete local database JSON backup"
-            >
-              <DownloadCloud className="w-4 h-4 text-cyan-400" />
-              <span>Download DB (.json)</span>
-            </a>
           </div>
         </div>
 
