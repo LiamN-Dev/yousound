@@ -164,9 +164,20 @@ export async function ensureTables(): Promise<void> {
        user_agent TEXT,
        status TEXT NOT NULL DEFAULT 'new',
        admin_note TEXT,
-       created_at TIMESTAMPTZ DEFAULT NOW()
+       created_at TIMESTAMPTZ DEFAULT NOW(),
+       updated_at TIMESTAMPTZ DEFAULT NOW(),
+       status_changed_at TIMESTAMPTZ DEFAULT NOW(),
+       user_seen_at TIMESTAMPTZ DEFAULT NOW()
      )`
   );
+  // Older copies of the table: add the progress-tracking columns
+  for (const col of [
+    'updated_at TIMESTAMPTZ DEFAULT NOW()',
+    'status_changed_at TIMESTAMPTZ DEFAULT NOW()',
+    'user_seen_at TIMESTAMPTZ DEFAULT NOW()',
+  ]) {
+    await run(`feedback_items.${col.split(' ')[0]}`, `ALTER TABLE IF EXISTS feedback_items ADD COLUMN IF NOT EXISTS ${col}`);
+  }
 
   console.log('[Schema] Database tables verified.');
 }
