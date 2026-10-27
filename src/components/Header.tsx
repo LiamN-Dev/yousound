@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useSyncExternalStore } from 'react';
+import { getFeedbackState, subscribeFeedback } from '../services/feedbackNotifications';
 import { useAuth } from '../context/AuthContext';
 import { useAudio } from '../context/AudioContext';
 import { useTheme } from '../context/ThemeContext';
@@ -62,6 +63,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAccount,
   onOpenSongRequest,
 }) => {
+  const feedbackUnread = useSyncExternalStore(subscribeFeedback, getFeedbackState).unreadCount;
   const { currentUser, isAdmin, bannerConfig, logout, unreadChatCount, markChatsRead } = useAuth();
   const { userFavorites, userPlaylists } = useAudio();
   const { theme, toggleTheme } = useTheme();
@@ -265,6 +267,11 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <ListPlus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
                   <span>Request</span>
+                  {feedbackUnread > 0 && (
+                    <span className="min-w-[16px] h-4 px-1 rounded-full bg-cyan-500 text-slate-950 text-[10px] font-bold flex items-center justify-center">
+                      {feedbackUnread}
+                    </span>
+                  )}
                 </button>
 
                 {/* Site status (uptime monitor) */}
@@ -417,6 +424,11 @@ export const Header: React.FC<HeaderProps> = ({
               className="px-3 py-1.5 text-xs rounded-xl whitespace-nowrap font-semibold shrink-0 text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-600/20 border border-blue-200 dark:border-blue-500/30"
             >
               Request Song
+              {feedbackUnread > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-cyan-500 text-slate-950 text-[10px] font-bold">
+                  {feedbackUnread}
+                </span>
+              )}
             </button>
             <a
               href={STATUS_PAGE_URL}
