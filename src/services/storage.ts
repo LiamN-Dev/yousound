@@ -2315,6 +2315,55 @@ class StorageService {
     }
   }
 
+  /** The signed-in person's own reports, with progress + unread flags */
+  async getMyFeedback(): Promise<FeedbackItem[]> {
+    try {
+      const res = await fetch('/api/feedback/mine');
+      if (res.ok) {
+        const data = await res.json();
+        return data.items || [];
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  async markMyFeedbackSeen(): Promise<void> {
+    try {
+      await fetch('/api/feedback/mine/seen', { method: 'POST' });
+    } catch (_) {}
+  }
+
+  async clearClosedFeedback(): Promise<number> {
+    try {
+      const res = await fetch('/api/admin/feedback/clear-closed', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        return data.removed || 0;
+      }
+    } catch (_) {}
+    return 0;
+  }
+
+  /** A player measured the real length of a song that only had a placeholder length */
+  async reportSongDuration(songId: string, seconds: number): Promise<void> {
+    try {
+      const res = await fetch(`/api/songs/${encodeURIComponent(songId)}/duration`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seconds }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const idx = this.songs.findIndex((s) => s.id === songId);
+        if (data.duration && idx !== -1) {
+          this.songs[idx] = { ...this.songs[idx], duration: data.duration };
+          this.saveSongs();
+          this.notify();
+        }
+      }
+    } catch (_) {}
+  }
+
   async getFeedback(adminUserId: string): Promise<FeedbackItem[]> {
     try {
       const res = await fetch(`/api/admin/feedback?userId=${encodeURIComponent(adminUserId)}`);
