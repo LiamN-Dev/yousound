@@ -104,6 +104,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const handleTrackEndRef = useRef<() => void>(() => {});
   const currentSongRef = useRef<Song | null>(null);
   // The audio listeners below are created once, so they read the latest user role through a ref
+  const errorStreakRef = useRef(0); // consecutive playback errors (stops the auto-skip from looping)
   const userRoleRef = useRef<string | undefined>(currentUser?.role);
   userRoleRef.current = currentUser?.role;
 
@@ -121,6 +122,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     const handleLoadedMetadata = () => {
+      errorStreakRef.current = 0; // playback is working again
       if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
         const measured = Math.round(audio.duration);
         setDuration(audio.duration);
@@ -151,6 +153,12 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (currentSongRef.current) {
         const reason = audio.lastError || 'The audio stream or file could not be loaded.';
         setPlaybackError(`Unable to play "${currentSongRef.current.title}". ${reason}`);
+      }
+      // A broken YouTube video should not leave the player stuck: move on to the next song
+      // (at most twice in a row, so a blocked network cannot cause an endless loop).
+      if (audio.isYouTube && errorStreakRef.current < 2) {
+        errorStreakRef.current += 1;
+        setTimeout(() => handleTrackEndRef.current(), 2500);
       }
     };
 
