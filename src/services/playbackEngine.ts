@@ -105,6 +105,20 @@ class YouTubeEngine {
   playing = false;
   errorCode: number | null = null;
 
+  // --- self-recovery (YouTube sometimes stalls or throws a playback error mid-song) ---
+  private ytState = -1; // last state reported by YouTube
+  private wantPlay = false; // we are supposed to be playing right now
+  private hasStarted = false; // this video reached the playing state at least once
+  private recoveries = 0; // recovery attempts for the current video
+  private needsHardReset = false; // start from a brand new player on the next play
+  private hadError = false;
+  private stallTicks = 0;
+  private goodTicks = 0;
+  private lastTime = -1;
+  private startTimer: number | null = null;
+  private customError: string | null = null;
+  private startSeconds = 0;
+
   private volume = 0.85;
   private muted = false;
   private rate = 1;
@@ -292,7 +306,7 @@ class YouTubeEngine {
   }
 
   get errorMessage(): string {
-    return errorMessageForCode(this.errorCode);
+    return this.customError || errorMessageForCode(this.errorCode);
   }
 
   get currentVideoId(): string | null {
@@ -322,7 +336,21 @@ class YouTubeEngine {
     this.songHidden = songHidden;
     this.durationSec = 0;
     this.errorCode = null;
+    this.customError = null;
     this.playing = false;
+    this.wantPlay = false;
+    this.hasStarted = false;
+    this.recoveries = 0;
+    this.stallTicks = 0;
+    this.goodTicks = 0;
+    this.lastTime = -1;
+    this.startSeconds = 0;
+    this.clearStartTimer();
+    // After an error, begin with a clean player so one bad video cannot block the next song
+    if (this.hadError) {
+      this.needsHardReset = true;
+      this.hadError = false;
+    }
     this.needsLoad = this.iframe !== null; // later videos use loadVideoById
     this.active = true;
     this.applyLayout();
@@ -340,7 +368,10 @@ class YouTubeEngine {
           const origin = encodeURIComponent(window.location.origin);
           iframe.src =
             `https://www.youtube.com/embed/${firstId}` +
-            `?enablejsapi=1&playsinline=1&rel=0&modestbranding=1&origin=${origin}`;
+            `?enablejsapi=1&playsinline=1&rel=0&modestbranding=1&origin=${origin}` +
+            (this.startSeconds > 0 ? `&start=${Math.floor(this.startSeconds)}` : '');
+          // YouTube needs to know which site is embedding it (avoids "player configuration" errors)
+          iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
           iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
           iframe.setAttribute('allowfullscreen', 'true');
           iframe.setAttribute('title', 'YouTube video player');
@@ -356,12 +387,7 @@ class YouTubeEngine {
                 resolve();
               },
               onStateChange: (e: any) => this.onState(e.data),
-              onError: (e: any) => {
-                this.errorCode = typeof e.data === 'number' ? e.data : null;
-                this.playing = false;
-                this.emit('statechange');
-                this.emit('error');
-              },
+              onError: (e: any) => this.handleError(e.data),
             },
           });
           window.setTimeout(() => reject(new Error('YouTube player timed out')), 15000);
@@ -377,7 +403,11 @@ class YouTubeEngine {
 
   private onState(state: number) {
     // -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
+    this.ytState = state;
     if (state === 1) {
+      this.wantPlay = true;
+      this.hasStarted = true;
+      this.clearStartTimer();
       this.playing = true;
       const d = this.safe(() => this.player.getDuration(), 0);
       if (d > 0 && d !== this.durationSec) {
@@ -387,9 +417,11 @@ class YouTubeEngine {
       this.startPolling();
       this.emit('statechange');
     } else if (state === 2) {
+      this.wantPlay = false; // paused (from our button or YouTube's own controls)
       this.playing = false;
       this.emit('statechange');
     } else if (state === 0) {
+      this.wantPlay = false;
       this.playing = false;
       this.stopPolling();
       this.emit('statechange');
@@ -417,6 +449,7 @@ class YouTubeEngine {
         }
       }
       this.emit('timeupdate');
+      this.watchForStall();
     }, 250);
   }
 
@@ -428,6 +461,11 @@ class YouTubeEngine {
   }
 
   async play(): Promise<void> {
+    this.wantPlay = true;
+    if (this.needsHardReset) {
+      this.needsHardReset = false;
+      this.destroyPlayer();
+    }
     await this.ensurePlayer();
     if (!this.videoId) return;
     this.applySettings();
@@ -437,15 +475,19 @@ class YouTubeEngine {
     } else {
       this.player.playVideo();
     }
+    this.armStartTimer();
   }
 
   pause() {
+    this.wantPlay = false;
     if (this.player?.pauseVideo) {
       try { this.player.pauseVideo(); } catch (_) {}
     }
   }
 
   stop() {
+    this.wantPlay = false;
+    this.clearStartTimer();
     this.stopPolling();
     this.playing = false;
     this.videoId = null;
@@ -453,6 +495,111 @@ class YouTubeEngine {
     this.enlarged = false;
     this.active = false;
     this.applyLayout();
+  }
+
+  // ---------------- self-recovery ----------------
+  private clearStartTimer() {
+    if (this.startTimer !== null) {
+      window.clearTimeout(this.startTimer);
+      this.startTimer = null;
+    }
+  }
+
+  /** If a video never starts playing, try again instead of leaving the player stuck */
+  private armStartTimer() {
+    this.clearStartTimer();
+    this.startTimer = window.setTimeout(() => {
+      if (this.wantPlay && !this.hasStarted) this.recover('did not start');
+    }, 12000);
+  }
+
+  /** Called every 250ms while playing: has the picture/audio frozen for ~10 seconds? */
+  private watchForStall() {
+    if (!(this.wantPlay && (this.ytState === 1 || this.ytState === 3))) {
+      this.stallTicks = 0;
+      return;
+    }
+    const t = this.currentTime;
+    if (Math.abs(t - this.lastTime) < 0.05) {
+      this.stallTicks += 1;
+      this.goodTicks = 0;
+    } else {
+      this.lastTime = t;
+      this.stallTicks = 0;
+      this.goodTicks += 1;
+      if (this.goodTicks >= 60) this.recoveries = 0; // 15s of smooth playback: forgive earlier hiccups
+    }
+    if (this.stallTicks >= 40) {
+      this.stallTicks = 0;
+      this.recover('stalled');
+    }
+  }
+
+  private handleError(code: any) {
+    this.errorCode = typeof code === 'number' ? code : null;
+    // 2 = invalid, 100 = removed/private, 101/150 = embedding blocked: retrying cannot help
+    if (!this.wantPlay || [2, 100, 101, 150].includes(this.errorCode as number)) {
+      this.fail();
+      return;
+    }
+    this.recover(`error ${code}`);
+  }
+
+  private recover(reason: string) {
+    if (!this.videoId || !this.wantPlay) return;
+    this.recoveries += 1;
+    const resumeAt = Math.max(0, this.currentTime);
+    console.warn(`[YouTube] Recovering (${reason}), attempt ${this.recoveries}`);
+
+    // Attempt 1: reload the same video at the same spot
+    if (this.recoveries === 1 && this.player?.loadVideoById) {
+      try {
+        this.hasStarted = false;
+        this.player.loadVideoById({ videoId: this.videoId, startSeconds: resumeAt });
+        this.armStartTimer();
+        return;
+      } catch (_) {}
+    }
+
+    // Attempt 2: throw the player away and build a fresh one
+    if (this.recoveries <= 2) {
+      this.startSeconds = resumeAt;
+      this.hasStarted = false;
+      this.destroyPlayer();
+      this.needsLoad = false;
+      this.ensurePlayer()
+        .then(() => {
+          this.applySettings();
+          this.player.playVideo();
+          this.armStartTimer();
+        })
+        .catch(() => this.fail('YouTube stopped responding.'));
+      return;
+    }
+
+    this.fail('YouTube stopped responding. Try the next song or reload the page.');
+  }
+
+  private fail(message?: string) {
+    this.customError = message || null;
+    this.wantPlay = false;
+    this.playing = false;
+    this.hadError = true;
+    this.clearStartTimer();
+    this.stopPolling();
+    this.emit('statechange');
+    this.emit('error');
+  }
+
+  /** Removes the YouTube iframe completely so the next play starts clean */
+  private destroyPlayer() {
+    this.stopPolling();
+    this.clearStartTimer();
+    try { this.player?.destroy?.(); } catch (_) {}
+    try { this.iframe?.remove(); } catch (_) {}
+    this.player = null;
+    this.iframe = null;
+    this.readyPromise = null;
   }
 
   get currentTime(): number {
@@ -470,15 +617,12 @@ class YouTubeEngine {
   }
 
   destroy() {
-    this.stopPolling();
-    try { this.player?.destroy?.(); } catch (_) {}
+    this.destroyPlayer();
     this.wrapper.remove();
     this.backdrop.remove();
     this.pill.remove();
-    this.player = null;
-    this.iframe = null;
-    this.readyPromise = null;
   }
+
 }
 
 export class PlaybackRouter {
