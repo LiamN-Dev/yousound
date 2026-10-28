@@ -750,6 +750,25 @@ export const AdminPipelineManager: React.FC = () => {
             <p className="text-slate-300 leading-relaxed text-[11px]">
               These songs have passed admin moderation, and staging verification. They are currently active on the public site library and playable by all listeners.
             </p>
+            {publishedRequests.length > 0 && (
+              <div className="pt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Remove all ${publishedRequests.length} published entries from this list?\n\nThe songs STAY live in the library. This only cleans up the dashboard.`
+                      )
+                    ) {
+                      publishedRequests.forEach((r) => deleteSongRequest(r.id, true));
+                    }
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white border border-white/15 text-xs font-semibold transition-all"
+                >
+                  Clear all from this list (keep songs live)
+                </button>
+              </div>
+            )}
           </div>
 
           {publishedRequests.length === 0 ? (
@@ -799,15 +818,24 @@ export const AdminPipelineManager: React.FC = () => {
                     </button>
                     <button
                       type="button"
+                      onClick={() => deleteSongRequest(req.id, true)}
+                      className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-100 border border-white/15 text-xs font-semibold transition-all"
+                      title="Removes this entry from the list. The song stays live in the library."
+                    >
+                      Remove from list
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
-                        if (confirm(`Delete published track "${req.songTitle}" from YouSong library?`)) {
+                        if (confirm(`Delete "${req.songTitle}" from the YouSong library too? Listeners will no longer be able to play it.`)) {
                           deleteSongRequest(req.id);
                         }
                       }}
-                      className="p-2 rounded-xl hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition-colors"
-                      title="Delete Track"
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-semibold transition-all"
+                      title="Deletes the song from the library and removes this entry"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete song
                     </button>
                   </div>
                 </div>
