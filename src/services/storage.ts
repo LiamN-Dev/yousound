@@ -641,13 +641,13 @@ class StorageService {
     return true;
   }
 
-  async deleteRequest(id: string): Promise<boolean> {
+  async deleteRequest(id: string, keepSong: boolean = false): Promise<boolean> {
     this.requests = this.requests.filter((r) => r.id !== id);
     this.saveRequests();
     this.notify();
 
     try {
-      await fetch(`/api/admin/requests/${id}`, { method: 'DELETE' });
+      await fetch(`/api/admin/requests/${id}${keepSong ? '?keepSong=1' : ''}`, { method: 'DELETE' });
     } catch (e) {
       console.error('Delete request error:', e);
     }
