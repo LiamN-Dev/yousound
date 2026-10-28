@@ -554,7 +554,8 @@ export const SongRequestModal: React.FC<SongRequestModalProps> = ({ isOpen, onCl
               <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">
                 <p>
                   <span className="text-slate-400 font-semibold">Works:</span> a link to one YouTube video (youtube.com/watch,
-                  youtu.be, Shorts, or YouTube Music).
+                  youtu.be, Shorts, or YouTube Music), including the google.com/goto?url=... links Chromebooks create when
+                  you share.
                 </p>
                 <p>
                   <span className="text-slate-400 font-semibold">Does not work:</span> playlists, channels, Spotify, SoundCloud,
