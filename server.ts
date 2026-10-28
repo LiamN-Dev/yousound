@@ -1610,11 +1610,14 @@ app.post('/api/requests', async (req: Request, res: Response) => {
     if (!songTitle || !songTitle.trim()) {
       return res.status(400).json({ error: 'Title is required' });
     }
+    let storedLink = String(webLink || '').trim();
     if (requestType !== 'feature') {
-      const linkCheck = checkYouTubeLink(String(webLink || ''));
+      const linkCheck = checkYouTubeLink(storedLink);
       if (!linkCheck.videoId) {
         return res.status(400).json({ error: linkCheck.message });
       }
+      // Save the clean YouTube address, not the Google redirect wrapper
+      storedLink = `https://www.youtube.com/watch?v=${linkCheck.videoId}`;
     }
 
     const defaultCover = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop&q=80';
@@ -1623,7 +1626,7 @@ app.post('/api/requests', async (req: Request, res: Response) => {
       id: `req-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       songTitle: songTitle.trim(),
       artist: (artist || '').trim(),
-      webLink: (webLink || '').trim(),
+      webLink: storedLink,
       coverUrl: (coverUrl || defaultCover).trim(),
       notes: (notes || '').trim(),
       requestedByUserId: requestedByUserId || 'guest',
@@ -1688,8 +1691,28 @@ app.patch('/api/admin/requests/:id', async (req: Request, res: Response) => {
 // ----------------- YOUTUBE EMBED HELPERS -----------------
 // Songs from requests are played through the official YouTube embedded player.
 // We only store the video ID as audioUrl = "youtube:VIDEO_ID" (no downloading / converting).
+/**
+ * Chromebook / Google share links wrap the real address, e.g.
+ *   https://www.google.com/goto?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D...
+ *   https://www.google.com/url?q=https://youtu.be/...
+ * Peel those off so the real YouTube link is used.
+ */
+function unwrapRedirect(input: string, depth = 0): string {
+  if (depth > 3) return input;
+  try {
+    const u = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+    const host = u.hostname.replace(/^www\./, '');
+    const isGoogle = host === 'google.com' || host.endsWith('.google.com');
+    if (isGoogle && (u.pathname === '/goto' || u.pathname === '/url' || u.pathname === '/amp/s')) {
+      const inner = u.searchParams.get('url') || u.searchParams.get('q');
+      if (inner) return unwrapRedirect(inner.trim(), depth + 1);
+    }
+  } catch (_) {}
+  return input;
+}
+
 function extractYouTubeVideoId(input: string): string | null {
-  const raw = (input || '').trim();
+  const raw = unwrapRedirect((input || '').trim());
   if (!raw) return null;
   if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
   try {
@@ -1715,7 +1738,7 @@ type YouTubeCheck = { videoId: string | null; message: string };
 
 /** Explains in plain words why a pasted link can or cannot be used. */
 function checkYouTubeLink(input: string): YouTubeCheck {
-  const raw = (input || '').trim();
+  const raw = unwrapRedirect((input || '').trim());
   if (!raw) return { videoId: null, message: 'Paste a YouTube link first.' };
   const id = extractYouTubeVideoId(raw);
   if (id) return { videoId: id, message: '' };
@@ -1966,7 +1989,8 @@ app.delete('/api/admin/requests/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const item = await getRequestByIdDb(id);
-    if (item?.publishedSongId) {
+    // ?keepSong=1 only removes the entry from the admin list; the song stays live in the library
+    if (item?.publishedSongId && req.query.keepSong !== '1') {
       await deleteSongDb(item.publishedSongId);
     }
     await deleteRequestDb(id);
