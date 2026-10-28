@@ -39,7 +39,7 @@ interface AuthContextType {
     genre?: string;
   }) => Promise<SongRequest>;
   updateSongRequestStatus: (id: string, status: SongRequestStatus, adminNote?: string) => void;
-  deleteSongRequest: (id: string) => void;
+  deleteSongRequest: (id: string, keepSong?: boolean) => void;
   adminUpdateRequest: (id: string, updates: Partial<SongRequest>) => Promise<SongRequest | null>;
   adminApproveAndProcess: (
     id: string,
@@ -239,8 +239,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSongRequests(storage.getRequests());
   };
 
-  const deleteSongRequest = async (id: string) => {
-    await storage.deleteRequest(id);
+  const deleteSongRequest = async (id: string, keepSong: boolean = false) => {
+    await storage.deleteRequest(id, keepSong);
     setSongRequests(storage.getRequests());
   };
 
