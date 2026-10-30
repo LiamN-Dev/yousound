@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -11,69 +11,6 @@ export interface ProcessedAudioResult {
   webViewLink?: string;
   folderId?: string;
   duration: number; // in seconds
-}
-
-/**
- * Generate a clean fallback audio file (PCM converted to MP3 using ffmpeg)
- * to ensure pipeline stability if a YouTube link is blocked/rate-limited by YouTube bot detection.
- */
-async function generateFallbackMp3(destPath: string, durationSeconds: number = 180): Promise<number> {
-  const sampleRate = 22050;
-  const numSamples = sampleRate * durationSeconds;
-  const dataSize = numSamples * 2;
-  const wavBuffer = Buffer.alloc(44 + dataSize);
-
-  wavBuffer.write('RIFF', 0);
-  wavBuffer.writeUInt32LE(36 + dataSize, 4);
-  wavBuffer.write('WAVE', 8);
-  wavBuffer.write('fmt ', 12);
-  wavBuffer.writeUInt32LE(16, 16);
-  wavBuffer.writeUInt16LE(1, 20); // PCM
-  wavBuffer.writeUInt16LE(1, 22); // mono
-  wavBuffer.writeUInt32LE(sampleRate, 24);
-  wavBuffer.writeUInt32LE(sampleRate * 2, 28);
-  wavBuffer.writeUInt16LE(2, 32);
-  wavBuffer.writeUInt16LE(16, 34);
-  wavBuffer.write('data', 36);
-  wavBuffer.writeUInt32LE(dataSize, 40);
-
-  // Soft melodic chord progression
-  const chords = [
-    [261.63, 329.63, 392.0], // C
-    [220.0, 261.63, 329.63], // Am
-    [174.61, 220.0, 261.63], // F
-    [196.0, 246.94, 293.66], // G
-  ];
-
-  for (let i = 0; i < numSamples; i++) {
-    const t = i / sampleRate;
-    const chordIndex = Math.floor(t / 4) % chords.length;
-    const chord = chords[chordIndex];
-    let sample = 0;
-    chord.forEach((freq, idx) => {
-      sample += Math.sin(2 * Math.PI * freq * t) * (0.15 / (idx + 1));
-    });
-    // Vinyl subtle noise
-    sample += (Math.random() - 0.5) * 0.015;
-    const intSample = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
-    wavBuffer.writeInt16LE(intSample, 44 + i * 2);
-  }
-
-  const tempWav = destPath.replace(/\.mp3$/, '.wav');
-  fs.writeFileSync(tempWav, wavBuffer);
-
-  try {
-    await execFileAsync('ffmpeg', ['-y', '-i', tempWav, '-codec:a', 'libmp3lame', '-qscale:a', '2', destPath]);
-  } catch (err) {
-    // If ffmpeg fails to encode mp3, save the wav renamed
-    fs.copyFileSync(tempWav, destPath);
-  } finally {
-    if (fs.existsSync(tempWav)) {
-      try { fs.unlinkSync(tempWav); } catch (_) {}
-    }
-  }
-
-  return durationSeconds;
 }
 
 /**
@@ -98,61 +35,172 @@ async function probeAudioDuration(filePath: string): Promise<number> {
 }
 
 /**
- * Extracts audio from a YouTube link to a temporary .mp3 file on local disk.
- * Returns local file path and track duration in seconds.
+ * Convert an administrator-supplied local audio file to a temporary MP3.
+ * This is the fallback path for sources that YouTube blocks from the server.
+ */
+export async function convertLocalAudioToMp3(
+  inputFilePath: string,
+  requestId: string
+): Promise<{ tempFilePath: string; duration: number }> {
+  if (!fs.existsSync(inputFilePath)) {
+    throw new Error('The uploaded audio file could not be found on the server. Upload it again.');
+  }
+
+  const safeRequestId = String(requestId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'upload';
+  const outputPath = path.join('/tmp', `yousong_${safeRequestId}_${Date.now()}.mp3`);
+
+  try {
+    await execFileAsync('ffmpeg', [
+      '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', inputFilePath,
+      '-vn', '-map_metadata', '-1',
+      '-codec:a', 'libmp3lame', '-qscale:a', '0',
+      outputPath,
+    ], { timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('ffmpeg finished without creating an MP3 file. Try a standard MP3, WAV, or M4A audio file.');
+    }
+    const stats = fs.statSync(outputPath);
+    if (stats.size < 500) {
+      throw new Error('The uploaded audio is empty or too small to be valid.');
+    }
+    return { tempFilePath: outputPath, duration: await probeAudioDuration(outputPath) };
+  } catch (error: any) {
+    if (fs.existsSync(outputPath)) {
+      try { fs.unlinkSync(outputPath); } catch {}
+    }
+    const detail = String(error?.stderr || error?.message || error || '').trim().slice(-1200);
+    throw new Error(`Could not convert the uploaded audio to MP3. Check that the file is a playable audio file. ${detail}`);
+  }
+}
+
+function getYouTubeExtractionMessage(error: any): string {
+  const detail = [error?.stderr, error?.stdout, error?.message]
+    .filter((part) => typeof part === 'string' && part.trim())
+    .join('\n');
+
+  if (/HTTP Error 429|Too Many Requests|Sign in to confirm you.?re not a bot|confirm you.?re not a bot|bot challenge/i.test(detail)) {
+    return 'YouTube rejected the request with rate limiting (HTTP 429) or an anti-bot verification challenge. This is not an ffmpeg failure. The server cannot fetch this video until YouTube permits the request. Try again later, or use the manual audio-file upload fallback for a file you own or are licensed to re-host.';
+  }
+  if (/No supported JavaScript runtime|JavaScript runtime.*not found|yt-dlp-ejs|challenge solver/i.test(detail)) {
+    return 'The server is missing a supported yt-dlp JavaScript runtime or challenge-solver package. Redeploy using the included Dockerfile, which installs yt-dlp with its default components and uses Node.js as the runtime.';
+  }
+  if (/ffmpeg.*not found|ffmpeg.*not installed|not found.*ffmpeg/i.test(detail)) {
+    return 'ffmpeg is missing on the server. Redeploy the service with the included Dockerfile so ffmpeg and ffprobe are installed.';
+  }
+
+  const conciseDetail = String(error?.stderr || error?.stdout || '')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .slice(-6)
+    .join(' | ')
+    .replace(/https?:\/\/[^\s]+/gi, '[source URL]')
+    .slice(-1000);
+  return `yt-dlp could not download this source. Confirm you have permission to access and re-host the audio. ${conciseDetail || 'Check the Render service logs for the extraction details.'}`;
+}
+
+/**
+ * If YT_AUDIO_API_URL is set, use the dedicated converter service rather than the main
+ * YouSong Render process to retrieve/convert the source. This is compatible with the
+ * token flow used by alperensumeroglu/yt-audio-api and expects the protected YouSong
+ * converter-service included in this repository. The resulting MP3 is still uploaded
+ * to Google Drive by the existing pipeline and never used for playback from Render.
+ */
+async function extractAudioViaConfiguredApi(
+  youtubeUrl: string,
+  requestId: string,
+  baseUrl: string,
+  apiKey: string,
+): Promise<{ tempFilePath: string; duration: number }> {
+  const safeRequestId = String(requestId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'track';
+  const tempFilePath = path.join('/tmp', `yousong_converter_${safeRequestId}_${Date.now()}.mp3`);
+  const apiBase = baseUrl.trim().replace(/\/+$/, '');
+  const headers = { 'X-API-Key': apiKey, Authorization: `Bearer ${apiKey}` };
+  const requestTimeoutMs = Math.max(60_000, Number(process.env.YT_AUDIO_API_TIMEOUT_MS || 270_000));
+
+  try {
+    const tokenResponse = await fetch(`${apiBase}/?url=${encodeURIComponent(youtubeUrl)}`, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    let tokenPayload: any = {};
+    try { tokenPayload = await tokenResponse.json(); } catch {}
+    if (!tokenResponse.ok) {
+      const detail = String(tokenPayload?.detail || tokenPayload?.error || `HTTP ${tokenResponse.status}`).slice(0, 1200);
+      if (/429|too many requests|bot|verification|blocked|refused/i.test(detail)) {
+        throw new Error(`The configured converter could not retrieve this YouTube video: ${detail}`);
+      }
+      throw new Error(`The configured YouTube converter failed (${tokenResponse.status}): ${detail}`);
+    }
+    const token = typeof tokenPayload?.token === 'string' ? tokenPayload.token : '';
+    if (!token || token.length > 512) {
+      throw new Error('The configured YouTube converter returned no valid download token. Check that YT_AUDIO_API_URL points to the YouSong converter service.');
+    }
+
+    const downloadResponse = await fetch(`${apiBase}/download?token=${encodeURIComponent(token)}`, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!downloadResponse.ok) {
+      let detail = '';
+      try {
+        const payload: any = await downloadResponse.json();
+        detail = String(payload?.detail || payload?.error || '');
+      } catch {
+        detail = await downloadResponse.text().catch(() => '');
+      }
+      throw new Error(`The converter created a token but MP3 retrieval failed (${downloadResponse.status}). ${detail.slice(0, 800)}`.trim());
+    }
+
+    const contentType = downloadResponse.headers.get('content-type') || '';
+    if (/application\/json|text\/html/i.test(contentType)) {
+      const detail = (await downloadResponse.text()).slice(0, 800);
+      throw new Error(`The converter did not return an MP3 file. ${detail}`);
+    }
+    const contentLength = Number(downloadResponse.headers.get('content-length') || 0);
+    if (contentLength > 60 * 1024 * 1024) {
+      throw new Error('The converted MP3 exceeds YouSong’s 60 MB import limit.');
+    }
+    const mp3Buffer = Buffer.from(await downloadResponse.arrayBuffer());
+    if (mp3Buffer.length < 500) throw new Error('The converter returned an empty or invalid MP3 file.');
+    if (mp3Buffer.length > 60 * 1024 * 1024) throw new Error('The converted MP3 exceeds YouSong’s 60 MB import limit.');
+    fs.writeFileSync(tempFilePath, mp3Buffer, { flag: 'wx' });
+    const duration = await probeAudioDuration(tempFilePath);
+    console.log(`[AudioPipeline] Dedicated converter returned an MP3 (${mp3Buffer.length} bytes, ${duration}s) for request ${safeRequestId}.`);
+    return { tempFilePath, duration };
+  } catch (error: any) {
+    if (fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch {}
+    }
+    const message = String(error?.message || error || 'Unknown converter error');
+    if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|aborted/i.test(message)) {
+      throw new Error(`Could not reach the dedicated YouTube converter at ${apiBase}. Confirm YT_AUDIO_API_URL is the converter's public HTTPS URL and that its service is running. ${message.slice(0, 500)}`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Extract audio only through an explicitly configured, separate converter service.
+ * YouTube requests intended for normal listening should use the official embedded player.
  */
 export async function extractAudioFromYouTube(
   youtubeUrl: string,
   requestId: string
 ): Promise<{ tempFilePath: string; duration: number }> {
-  const tempDir = '/tmp';
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
+  const converterUrl = String(process.env.YT_AUDIO_API_URL || '').trim();
+  if (!converterUrl) {
+    throw new Error('YouTube-to-MP3 conversion is disabled because no dedicated converter is configured. Use “Publish YouTube Directly” to add this link through YouTube’s official player, or upload an audio file you are licensed to host.');
   }
-
-  const outputPattern = path.join(tempDir, `yousong_${requestId}.%(ext)s`);
-  const finalMp3Path = path.join(tempDir, `yousong_${requestId}.mp3`);
-
-  // Clean up any stale file
-  if (fs.existsSync(finalMp3Path)) {
-    try { fs.unlinkSync(finalMp3Path); } catch (_) {}
+  const converterKey = String(process.env.YT_AUDIO_API_KEY || '').trim();
+  if (!converterKey) {
+    throw new Error('YT_AUDIO_API_URL is configured, but YT_AUDIO_API_KEY is missing. Set the same CONVERTER_API_KEY on the converter service and YT_AUDIO_API_KEY on YouSong.');
   }
-
-  let extracted = false;
-
-  // Try extracting using yt-dlp
-  try {
-    console.log(`[AudioPipeline] Running yt-dlp on ${youtubeUrl} for request ${requestId}...`);
-    const ytDlpBinary = fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : 'yt-dlp';
-    
-    await execFileAsync(ytDlpBinary, [
-      '--no-playlist',
-      '--extract-audio',
-      '--audio-format', 'mp3',
-      '--audio-quality', '0',
-      '--max-filesize', '60M',
-      '--output', outputPattern,
-      youtubeUrl
-    ], { timeout: 60000 });
-
-    if (fs.existsSync(finalMp3Path)) {
-      extracted = true;
-      console.log(`[AudioPipeline] Successfully extracted MP3 to ${finalMp3Path}`);
-    }
-  } catch (ytError: any) {
-    console.warn(`[AudioPipeline] yt-dlp extraction warning (will use synthetic clean fallback):`, ytError?.message || ytError);
-  }
-
-  // If extraction failed or file not created, synthesize a clean fallback track
-  let duration = 180;
-  if (!extracted || !fs.existsSync(finalMp3Path)) {
-    console.log(`[AudioPipeline] Generating high-fidelity fallback audio stream for testing pipeline...`);
-    duration = await generateFallbackMp3(finalMp3Path, 180);
-  } else {
-    duration = await probeAudioDuration(finalMp3Path);
-  }
-
-  return { tempFilePath: finalMp3Path, duration };
+  return extractAudioViaConfiguredApi(youtubeUrl, requestId, converterUrl, converterKey);
 }
 
 /**
@@ -270,21 +318,23 @@ export async function uploadMp3ToGoogleDrive(
     const fileId = driveFile.id;
     console.log(`[AudioPipeline] Google Drive file created: ID ${fileId}`);
 
-    // 3. Set public permissions so the audio track can be streamed
-    try {
-      await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          role: 'reader',
-          type: 'anyone',
-        }),
-      });
-    } catch (permErr) {
-      console.warn('[AudioPipeline] Setting public permission note:', permErr);
+    // 3. Make the file directly readable by the app's players. This is required for
+    // link-based playback; fail explicitly rather than publishing a broken URL.
+    const permissionRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+    });
+    if (!permissionRes.ok) {
+      const detail = await permissionRes.text().catch(() => 'Permission request failed');
+      // Avoid leaving a private orphaned upload in Drive if public streaming permissions fail.
+      await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => undefined);
+      throw new Error(`Could not enable link access to the uploaded MP3 (${permissionRes.status}): ${detail}`);
     }
 
     // Direct streaming URL from Google Drive:

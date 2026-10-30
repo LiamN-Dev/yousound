@@ -112,6 +112,7 @@ export const AdminPanel: React.FC = () => {
   const [editUsername, setEditUsername] = useState('');
   const [editTempPassword, setEditTempPassword] = useState('');
   const [editRole, setEditRole] = useState<'admin' | 'user'>('user');
+  const [editDailyListenLimit, setEditDailyListenLimit] = useState('');
   const [editChatBlocked, setEditChatBlocked] = useState(false);
   const [editIsSuspended, setEditIsSuspended] = useState(false);
   const [editSuspendedReason, setEditSuspendedReason] = useState('');
@@ -356,6 +357,7 @@ export const AdminPanel: React.FC = () => {
       newUsername: editUsername.trim() || undefined,
       newPassword: editTempPassword.trim() || undefined,
       role: editRole,
+      dailyListenLimit: editDailyListenLimit.trim() === '' ? null : Number(editDailyListenLimit),
       chatBlocked: editChatBlocked,
       isSuspended: editIsSuspended,
       suspendedReason: editIsSuspended ? (editSuspendedReason.trim() || 'Suspended by Administrator') : '',
@@ -752,7 +754,7 @@ export const AdminPanel: React.FC = () => {
                   <span>YouSong Moderation & Conversion Pipeline</span>
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Four-stage human moderation workflow: Holding Queue Review &rarr; Approve (YouTube embed check) &rarr; Staging & Test Stream &rarr; Final Publish to YouSong Library.
+                  Review a request, convert permitted audio to MP3 once, upload it to Google Drive, preview the staged file, then publish. Playback streams from Drive instead of through this app host.
                 </p>
               </div>
             </div>
@@ -1091,6 +1093,7 @@ export const AdminPanel: React.FC = () => {
                     <th className="pb-3">Role</th>
                     <th className="pb-3">Last Logged In</th>
                     <th className="pb-3">Last Song Listened</th>
+                    <th className="pb-3">Listens Today / Limit</th>
                     <th className="pb-3">Chat Access</th>
                     <th className="pb-3 pr-2 text-right">Actions</th>
                   </tr>
@@ -1155,6 +1158,11 @@ export const AdminPanel: React.FC = () => {
                           <span className="text-slate-500 italic">No plays yet</span>
                         )}
                       </td>
+                      <td className="py-3 text-slate-300 text-[11px] whitespace-nowrap">
+                        <span className={u.dailyListenLimit != null && (u.dailyListensToday || 0) >= u.dailyListenLimit ? 'text-rose-300 font-bold' : ''}>
+                          {u.dailyListensToday || 0} / {u.dailyListenLimit == null ? 'Unlimited' : u.dailyListenLimit}
+                        </span>
+                      </td>
                       <td className="py-3">
                         {u.chatBlocked ? (
                           <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
@@ -1176,6 +1184,7 @@ export const AdminPanel: React.FC = () => {
                               setEditUsername(u.username);
                               setEditTempPassword('');
                               setEditRole(u.role);
+                              setEditDailyListenLimit(u.dailyListenLimit == null ? '' : String(u.dailyListenLimit));
                               setEditChatBlocked(!!u.chatBlocked);
                               setEditIsSuspended(!!u.isSuspended);
                               setEditSuspendedReason(u.suspendedReason || '');
@@ -1279,6 +1288,24 @@ export const AdminPanel: React.FC = () => {
                       onChange={(e) => setEditTempPassword(e.target.value)}
                       className="w-full px-3 py-2 text-xs rounded-xl bg-white/[0.05] border border-white/10 text-white focus:outline-none focus:border-cyan-400 font-mono text-xs"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Daily Song Listen Limit
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000000}
+                      step={1}
+                      inputMode="numeric"
+                      placeholder="Blank = unlimited"
+                      value={editDailyListenLimit}
+                      onChange={(e) => setEditDailyListenLimit(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-xl bg-white/[0.05] border border-white/10 text-white focus:outline-none focus:border-cyan-400"
+                    />
+                    <p className="mt-1 text-[10px] text-slate-500">Use 0 to block listening. The counter resets at midnight UTC.</p>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

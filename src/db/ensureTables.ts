@@ -65,6 +65,7 @@ export async function ensureTables(): Promise<void> {
   const columns: Array<[string, string]> = [
     ['users', 'chat_blocked BOOLEAN DEFAULT false'],
     ['users', 'is_suspended BOOLEAN DEFAULT false'],
+    ['users', 'daily_listen_limit INTEGER'],
     ['chat_threads', 'is_approved BOOLEAN NOT NULL DEFAULT false'],
     ['chat_threads', 'is_terminated BOOLEAN NOT NULL DEFAULT false'],
     ['chat_threads', 'terminated_reason TEXT'],
@@ -77,6 +78,20 @@ export async function ensureTables(): Promise<void> {
   for (const [table, col] of columns) {
     await run(`${table}.${col.split(' ')[0]}`, `ALTER TABLE IF EXISTS ${table} ADD COLUMN IF NOT EXISTS ${col}`);
   }
+
+  await run(
+    'user_daily_listen_usage',
+    `CREATE TABLE IF NOT EXISTS user_daily_listen_usage (
+       uid TEXT NOT NULL,
+       usage_date DATE NOT NULL,
+       listens INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (uid, usage_date)
+     )`
+  );
+  await run(
+    'idx_user_daily_listen_usage_date',
+    'CREATE INDEX IF NOT EXISTS idx_user_daily_listen_usage_date ON user_daily_listen_usage(usage_date)'
+  );
 
 
   // 2b. Compare every table with what the app expects and repair differences.

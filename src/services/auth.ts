@@ -162,6 +162,10 @@ const RULES: Rule[] = [
   // Public: needed before anyone can log in, plus read-only media
   ['GET', /^\/api\/(status|health|banner|maintenance)$/, 'public'],
   ['GET', /^\/api\/admin\/banner$/, 'public'],
+  // OAuth callback is protected by one-time, HMAC-signed state created by the admin-only auth-url route.
+  // Do not require the admin cookie on the callback host: cookies are origin-scoped and Google may return
+  // to the canonical Render domain even when the admin started from an alternate frontend domain.
+  ['GET', /^\/api\/admin\/google-drive\/oauth\/callback$/, 'public'],
   ['POST', /^\/api\/auth\/(login|register|logout)$/, 'public'],
   ['POST', /^\/api\/feedback$/, 'public'],
   ['GET', /^\/api\/(media\/(audio|cover|drive-stream)|drive\/stream)\//, 'public'],

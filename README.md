@@ -1,20 +1,25 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# YouSong
 
-# Run and deploy your AI Studio app
+YouSong is a React/Vite frontend with a long-running Express server, PostgreSQL/Supabase persistence, Google Drive-backed audio, and per-user daily listening limits.
 
-This contains everything you need to run your app locally.
+## Deploy on Render
 
-View your app in AI Studio: https://ai.studio/apps/9faf5390-8b72-4782-accf-701117bd15c3
+This app runs `yt-dlp`, `ffmpeg`, and `ffprobe` subprocesses. Use Render's **Docker** runtime so the included `Dockerfile` installs those tools and the YouTube JavaScript runtime. The Dockerfile also builds the Vite frontend and starts the Express server.
 
-## Run Locally
+Read [`RENDER_FIX_GUIDE.md`](./RENDER_FIX_GUIDE.md) for the deployment settings and Google Drive environment variables. Do not put secrets in the repository or frontend build variables.
 
-**Prerequisites:**  Node.js
+## Local development
+
+Requirements: Node.js 22+, Python 3, `ffmpeg`/`ffprobe`, and `yt-dlp` with `yt-dlp-ejs` installed.
+
+```bash
+npm install
+npm run dev
+```
+
+Set your existing database and Google Drive environment variables in a local environment file that is not committed to Git. Keep `.env` and `.env.local` out of version control.
 
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Optional private YouTube conversion worker
+
+The `converter-service/` folder can be deployed as a separate Render Docker Web Service. Configure `CONVERTER_API_KEY` on that service and matching `YT_AUDIO_API_URL` / `YT_AUDIO_API_KEY` on the main app. See `FEATURE_SETUP.md` for exact settings and limitations.

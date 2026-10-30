@@ -69,6 +69,7 @@ const AudioContext = createContext<AudioContextType | undefined>(undefined);
 export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
   const audioRef = useRef<PlaybackRouter | null>(null);
+  const playAttemptRef = useRef(0);
 
   const [allSongs, setAllSongs] = useState<Song[]>(() => storage.getSongs(currentUser));
   const [adminAllSongs, setAdminAllSongs] = useState<Song[]>(() => storage.getAllAdminSongs());
@@ -105,6 +106,17 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const currentSongRef = useRef<Song | null>(null);
   // The audio listeners below are created once, so they read the latest user role through a ref
   const errorStreakRef = useRef(0); // consecutive playback errors (stops the auto-skip from looping)
+  const youtubeSkipScheduledForAttemptRef = useRef<number | null>(null);
+
+  const scheduleYouTubeSkip = (attemptId: number) => {
+    if (youtubeSkipScheduledForAttemptRef.current === attemptId) return;
+    youtubeSkipScheduledForAttemptRef.current = attemptId;
+    errorStreakRef.current += 1;
+    window.setTimeout(() => {
+      if (attemptId === playAttemptRef.current) handleTrackEndRef.current();
+      if (youtubeSkipScheduledForAttemptRef.current === attemptId) youtubeSkipScheduledForAttemptRef.current = null;
+    }, 2500);
+  };
   const userRoleRef = useRef<string | undefined>(currentUser?.role);
   userRoleRef.current = currentUser?.role;
 
@@ -150,15 +162,17 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const handleError = () => {
       console.warn('Audio playback error for URL:', audio.src);
       setIsPlaying(false);
-      if (currentSongRef.current) {
+      if (currentSongRef.current && !audio.isYouTube) {
         const reason = audio.lastError || 'The audio stream or file could not be loaded.';
         setPlaybackError(`Unable to play "${currentSongRef.current.title}". ${reason}`);
+      } else if (audio.isYouTube) {
+        // A failed YouTube embed is handled quietly by advancing the queue below.
+        setPlaybackError(null);
       }
       // A broken YouTube video should not leave the player stuck: move on to the next song
-      // (at most twice in a row, so a blocked network cannot cause an endless loop).
-      if (audio.isYouTube && errorStreakRef.current < 2) {
-        errorStreakRef.current += 1;
-        setTimeout(() => handleTrackEndRef.current(), 2500);
+      // (bounded to 25 consecutive failures, so a whole run of unavailable playlist items can be skipped without looping forever).
+      if (audio.isYouTube && errorStreakRef.current < 25) {
+        scheduleYouTubeSkip(playAttemptRef.current);
       }
     };
 
@@ -219,41 +233,64 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const playSong = useCallback((song: Song, newQueue?: Song[]) => {
     if (!audioRef.current) return;
     const audio = audioRef.current;
+    const attemptId = ++playAttemptRef.current;
 
-    setCurrentSong(song);
-    audio.src = song.audioUrl;
-    audio.currentTime = 0;
-    audio.playbackRate = playbackSpeed;
-    setDuration(song.duration || 180);
+    // Do not start the audio request until the server has atomically reserved a listen.
+    // The role and user identity come from the server-side session cookie, never the browser.
+    void (async () => {
+      setPlaybackError(null);
+      if (currentUser) {
+        const allowance = await storage.authorizeSongListen(song.id);
+        if (attemptId !== playAttemptRef.current) return;
+        if (!allowance.allowed) {
+          // A denied next-track attempt should not falsely mark an already playing track as paused.
+          setIsPlaying(audio.isPlaying);
+          setPlaybackError(allowance.error || 'Your daily listen allowance could not be verified.');
+          return;
+        }
+        if (currentUser.role !== 'admin') {
+          // The API already updated canonical play counts and last-listened metadata.
+          // This call updates this browser's copy only; it deliberately does not call the API again.
+          storage.incrementSongPlay(song.id, currentUser.role, false);
+          storage.recordSongListenLocally(currentUser.id, song.title, song.artist);
+        }
+      } else {
+        if (attemptId !== playAttemptRef.current) return;
+        setIsPlaying(false);
+        setPlaybackError('Please log in to listen to songs.');
+        return;
+      }
+      if (attemptId !== playAttemptRef.current) return;
 
-    audio
-      .play()
-      .then(() => {
+      // The route is only set after authorization succeeds, so a denied listen never fetches audio.
+      setCurrentSong(song);
+      audio.src = song.audioUrl;
+      audio.currentTime = 0;
+      audio.playbackRate = playbackSpeed;
+      setDuration(song.duration || 180);
+      try {
+        await audio.play();
         setIsPlaying(true);
-        // ADMIN LISTENS SHOULD NEVER COUNT TOWARDS ANYTHING
-        if (currentUser?.role !== 'admin') {
-          storage.incrementSongPlay(song.id, currentUser?.role);
-          if (currentUser) {
-            storage.recordSongListen(currentUser.id, song.title, song.artist);
+      } catch (err) {
+        console.warn('Playback play request was interrupted or could not play stream:', err);
+        if (attemptId === playAttemptRef.current) {
+          setIsPlaying(false);
+          if (audio.isYouTube) {
+            setPlaybackError(null);
+            if (errorStreakRef.current < 25) scheduleYouTubeSkip(attemptId);
+          } else {
+            setPlaybackError(`Unable to play "${song.title}". The audio source may be unavailable or blocked.`);
           }
         }
-      })
-      .catch((err) => {
-        console.warn('Playback play request was interrupted or could not play stream:', err);
-        setIsPlaying(false);
-      });
+      }
 
-    if (newQueue) {
-      setQueue(newQueue.filter((s) => s.id !== song.id));
-    }
-  }, [currentUser]);
+      if (newQueue && attemptId === playAttemptRef.current) setQueue(newQueue.filter((s) => s.id !== song.id));
+    })();
+  }, [currentUser, playbackSpeed]);
 
   const handleTrackEnd = useCallback(() => {
     if (repeatMode === 'one') {
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch(() => {});
-      }
+      if (currentSong) playSong(currentSong);
       return;
     }
 

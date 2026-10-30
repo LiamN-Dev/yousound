@@ -18,6 +18,8 @@ export interface User {
   suspendedReason?: string;
   adminNote?: string;
   colorAccent?: UserAccentColor;
+  dailyListenLimit?: number | null; // null/undefined = unlimited; 0 = blocked from listening
+  dailyListensToday?: number; // Admin-only usage displayed in the user table
 }
 
 export type SongBadgeType = 'none' | 'hot' | 'new' | 'top' | 'pinned' | 'admin-pick' | 'limited' | 'custom' | 'spotlight';

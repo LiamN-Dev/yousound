@@ -63,7 +63,9 @@ export const SuspendedScreen: React.FC = () => {
     };
 
     fetchAppealData();
-    const interval = setInterval(fetchAppealData, 4000);
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchAppealData();
+    }, 15000);
 
     return () => {
       isMounted = false;

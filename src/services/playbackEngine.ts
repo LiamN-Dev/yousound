@@ -716,7 +716,12 @@ export class PlaybackRouter {
     } else {
       if (this.mode === 'youtube') this.yt?.stop();
       this.mode = 'native';
-      this.native.src = url;
+      // Legacy songs may still store our old proxy URL. Redirect their playback to Drive
+      // itself so audio bytes do not traverse this app's server and incur app egress.
+      const driveProxyMatch = url.match(/(?:https?:\/\/[^/]+)?\/api\/(?:media\/drive-stream|drive\/stream)\/([A-Za-z0-9_-]{20,45})/);
+      this.native.src = driveProxyMatch
+        ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(driveProxyMatch[1])}`
+        : url;
     }
   }
 

@@ -1,5 +1,5 @@
 import { eq, desc, and, or, asc, inArray, isNotNull, lte, ilike, sql } from 'drizzle-orm';
-import { db, checkSqlAvailability, noteDbError } from './index.ts';
+import { db, checkSqlAvailability, noteDbError, createPool, getDatabaseHealth } from './index.ts';
 import { localStore } from './localStore.ts';
 import {
   users,
@@ -109,6 +109,7 @@ export async function updateUserDb(
     adminNote?: string;
     chatBlocked?: boolean;
     colorAccent?: string;
+    dailyListenLimit?: number | null;
   }
 ) {
   if (!(await checkSqlAvailability())) {
@@ -160,6 +161,71 @@ export async function recordUserSongListenedDb(uid: string, songSummary: string)
   } catch (_) { noteDbError('recordUserSongListenedDb', _); }
 }
 
+/** Consume one listen using an atomic Postgres upsert so simultaneous requests cannot exceed the cap. */
+export async function consumeUserDailyListenDb(uid: string) {
+  const usageDate = new Date().toISOString().slice(0, 10); // UTC day, consistent across app instances
+  if (!(await checkSqlAvailability())) {
+    if (getDatabaseHealth().configured) {
+      throw new Error('Supabase is configured but unreachable, so the listen limit cannot be verified. Please try again shortly.');
+    }
+    return localStore.consumeDailyListen(uid, usageDate);
+  }
+
+  try {
+    const result = await createPool().query(
+      `WITH target AS (
+         SELECT daily_listen_limit FROM users WHERE uid = $1
+       ), bump AS (
+         INSERT INTO user_daily_listen_usage (uid, usage_date, listens)
+         SELECT $1, $2::date, 1 FROM target
+         WHERE target.daily_listen_limit IS NULL OR target.daily_listen_limit > 0
+         ON CONFLICT (uid, usage_date) DO UPDATE
+           SET listens = user_daily_listen_usage.listens + 1
+         WHERE (SELECT daily_listen_limit FROM target) IS NULL
+            OR user_daily_listen_usage.listens < (SELECT daily_listen_limit FROM target)
+         RETURNING listens
+       )
+       SELECT target.daily_listen_limit,
+              COALESCE(bump.listens, (
+                SELECT usage.listens FROM user_daily_listen_usage AS usage
+                WHERE usage.uid = $1 AND usage.usage_date = $2::date
+              ), 0)::integer AS listens_today,
+              (bump.listens IS NOT NULL) AS allowed
+       FROM target LEFT JOIN bump ON TRUE`,
+      [uid, usageDate]
+    );
+    const row = result.rows[0];
+    if (!row) return { allowed: false, listensToday: 0, limit: null as number | null };
+    return {
+      allowed: Boolean(row.allowed),
+      listensToday: Number(row.listens_today || 0),
+      limit: row.daily_listen_limit === null ? null : Number(row.daily_listen_limit),
+    };
+  } catch (error) {
+    noteDbError('consumeUserDailyListenDb', error);
+    // Fail closed on a configured SQL database error. Do not let an outage silently bypass limits.
+    throw new Error('Could not verify today’s listen allowance. Please try again shortly.');
+  }
+}
+
+/** Current UTC-day listen counts for rendering the admin user table. */
+export async function getTodayUserDailyListenCountsDb(): Promise<Record<string, number>> {
+  const usageDate = new Date().toISOString().slice(0, 10);
+  if (!(await checkSqlAvailability())) return localStore.getDailyListenCounts(usageDate);
+  try {
+    const result = await createPool().query(
+      'SELECT uid, listens FROM user_daily_listen_usage WHERE usage_date = $1::date',
+      [usageDate]
+    );
+    const counts: Record<string, number> = {};
+    for (const row of result.rows) counts[String(row.uid)] = Number(row.listens || 0);
+    return counts;
+  } catch (error) {
+    noteDbError('getTodayUserDailyListenCountsDb', error);
+    return localStore.getDailyListenCounts(usageDate);
+  }
+}
+
 export async function deleteUserDb(uid: string) {
   localStore.deleteUser(uid);
   if (!(await checkSqlAvailability())) return true;
@@ -183,6 +249,19 @@ export async function getSongsDb() {
   } catch (error) {
     noteDbError('getSongsDb', error);
     return localStore.getSongs();
+  }
+}
+
+export async function getSongByIdDb(id: string) {
+  if (!(await checkSqlAvailability())) {
+    return localStore.getSongs().find((song: any) => song.id === id) || null;
+  }
+  try {
+    const rows = await db.select().from(songs).where(eq(songs.id, id)).limit(1);
+    return rows[0] || null;
+  } catch (error) {
+    noteDbError('getSongByIdDb', error);
+    return localStore.getSongs().find((song: any) => song.id === id) || null;
   }
 }
 
@@ -806,6 +885,14 @@ export async function deletePopupDb(id: string) {
 }
 
 // ----------------- SYSTEM SETTINGS -----------------
+// Older versions wrote plain strings to system_settings but always attempted JSON.parse
+// while reading them. That made encrypted OAuth refresh tokens appear to be missing after
+// a process restart and silently fall back to Render's ephemeral local store. Accept both
+// legacy raw strings and JSON-serialized values so existing rows remain readable.
+function parseStoredSetting(raw: string): any {
+  try { return JSON.parse(raw); } catch { return raw; }
+}
+
 export async function getSettingDb<T = any>(key: string): Promise<T | null> {
   if (!(await checkSqlAvailability())) {
     return localStore.getSetting(key) as T;
@@ -817,7 +904,7 @@ export async function getSettingDb<T = any>(key: string): Promise<T | null> {
       .where(eq(systemSettings.key, key))
       .limit(1);
     if (!rows[0]) return localStore.getSetting(key) as T;
-    return JSON.parse(rows[0].value) as T;
+    return parseStoredSetting(rows[0].value) as T;
   } catch (error) {
     noteDbError('getSettingDb', error);
     return localStore.getSetting(key) as T;
@@ -828,7 +915,8 @@ export async function setSettingDb(key: string, value: any) {
   localStore.setSetting(key, value);
   if (!(await checkSqlAvailability())) return value;
   try {
-    const stringified = typeof value === 'string' ? value : JSON.stringify(value);
+    const serialized = JSON.stringify(value);
+    const stringified = serialized === undefined ? 'null' : serialized;
     await db
       .insert(systemSettings)
       .values({ key, value: stringified, updatedAt: new Date() })
@@ -840,6 +928,54 @@ export async function setSettingDb(key: string, value: any) {
   } catch (error) {
     noteDbError('setSettingDb', error);
     return value;
+  }
+}
+
+// OAuth refresh tokens and OAuth state must never be stored only in Render's local file
+// fallback. These strict helpers require PostgreSQL/Supabase and fail instead of claiming
+// the Drive connection is saved when the database is unavailable.
+export async function getPersistentSettingDb<T = any>(key: string): Promise<T | null> {
+  if (!(await checkSqlAvailability())) {
+    throw new Error('Persistent PostgreSQL/Supabase storage is unavailable. Check DATABASE_URL or SUPABASE_DB_URL; the site Google Drive connection cannot be safely loaded from Render local storage.');
+  }
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, key))
+      .limit(1);
+    return rows[0] ? (parseStoredSetting(rows[0].value) as T) : null;
+  } catch (error) {
+    noteDbError('getPersistentSettingDb', error);
+    throw new Error('Could not read the saved Google Drive connection from PostgreSQL/Supabase. Check the system_settings table and database connection.');
+  }
+}
+
+export async function setPersistentSettingDb(key: string, value: any): Promise<void> {
+  if (!(await checkSqlAvailability())) {
+    throw new Error('Persistent PostgreSQL/Supabase storage is unavailable. Connect the database before linking Google Drive.');
+  }
+  const serialized = JSON.stringify(value);
+  const stringified = serialized === undefined ? 'null' : serialized;
+  try {
+    await db
+      .insert(systemSettings)
+      .values({ key, value: stringified, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: systemSettings.key,
+        set: { value: stringified, updatedAt: new Date() },
+      });
+    const rows = await db
+      .select({ value: systemSettings.value })
+      .from(systemSettings)
+      .where(eq(systemSettings.key, key))
+      .limit(1);
+    if (!rows[0] || rows[0].value !== stringified) {
+      throw new Error('Database did not confirm the saved setting.');
+    }
+  } catch (error) {
+    noteDbError('setPersistentSettingDb', error);
+    throw new Error('Could not persist the Google Drive connection in PostgreSQL/Supabase. No local-only connection was created.');
   }
 }
 

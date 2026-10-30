@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, text, serial, integer, boolean, timestamp, jsonb, date, primaryKey } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -18,8 +18,18 @@ export const users = pgTable('users', {
   suspendedReason: text('suspended_reason'),
   adminNote: text('admin_note'),
   colorAccent: text('color_accent'),
+  dailyListenLimit: integer('daily_listen_limit'), // null = unlimited; 0 = no listens allowed
   createdAt: timestamp('created_at').defaultNow(),
 });
+
+/** One atomic counter per user per UTC calendar day. */
+export const userDailyListenUsage = pgTable('user_daily_listen_usage', {
+  uid: text('uid').notNull(),
+  usageDate: date('usage_date', { mode: 'string' }).notNull(),
+  listens: integer('listens').notNull().default(0),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.uid, table.usageDate] }),
+}));
 
 export const songs = pgTable('songs', {
   id: text('id').primaryKey(),

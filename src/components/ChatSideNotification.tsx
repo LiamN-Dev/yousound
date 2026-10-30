@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { storage } from '../services/storage';
 import { MessageSquare, X, ArrowRight } from 'lucide-react';
-import { ChatMessage } from '../types';
 
 interface ChatSideNotificationProps {
   onOpenChat: () => void;
@@ -31,59 +30,40 @@ export const ChatSideNotification: React.FC<ChatSideNotificationProps> = ({
     if (!currentUser) return;
 
     const pollIncoming = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const threads = await storage.getChatThreads(currentUser.id);
-        if (!threads || threads.length === 0) return;
+        for (const th of threads || []) {
+          // chat_threads already stores the latest message preview. Do not fetch the
+          // entire chat_messages history every few seconds just to discover one message.
+          if (!th.lastMessage || !th.lastMessageAt || !th.lastMessageSender || th.lastMessageSender === currentUser.username) continue;
+          const latestId = `${th.id}:${th.lastMessageAt}:${th.lastMessage}`;
 
-        // Collect latest messages across active threads
-        for (const th of threads) {
-          // If thread has messages and last sender is NOT current user
-          if (th.lastMessage && th.lastMessageSender && th.lastMessageSender !== currentUser.username) {
-            const threadMsgs = await storage.getChatMessages(th.id);
-            if (threadMsgs.length > 0) {
-              const latest = threadMsgs[threadMsgs.length - 1];
-
-              // On initial load, record existing IDs so we only notify on brand new ones
-              if (isInitialLoadRef.current) {
-                knownMessageIdsRef.current.add(latest.id);
-              } else {
-                if (
-                  !knownMessageIdsRef.current.has(latest.id) &&
-                  latest.senderId !== currentUser.id &&
-                  !isChatActive
-                ) {
-                  knownMessageIdsRef.current.add(latest.id);
-
-                  // Show side toast for 5 seconds
-                  if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-
-                  setActiveToast({
-                    id: latest.id,
-                    senderName: latest.senderUsername || 'Someone',
-                    content: latest.content,
-                    threadId: th.id,
-                    timestamp: Date.now(),
-                  });
-
-                  toastTimeoutRef.current = setTimeout(() => {
-                    setActiveToast(null);
-                  }, 5000);
-                }
-              }
-            }
+          if (isInitialLoadRef.current) {
+            knownMessageIdsRef.current.add(latestId);
+            continue;
           }
-        }
 
-        if (isInitialLoadRef.current) {
-          isInitialLoadRef.current = false;
+          if (knownMessageIdsRef.current.has(latestId)) continue;
+          knownMessageIdsRef.current.add(latestId);
+          if (isChatActive) continue;
+          if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+          setActiveToast({
+            id: latestId,
+            senderName: th.lastMessageSender || 'Someone',
+            content: th.lastMessage,
+            threadId: th.id,
+            timestamp: Date.now(),
+          });
+          toastTimeoutRef.current = setTimeout(() => setActiveToast(null), 5000);
         }
+        if (isInitialLoadRef.current) isInitialLoadRef.current = false;
       } catch (err) {
-        // Silent catch for polling
+        // Silent catch for notification polling.
       }
     };
-
     pollIncoming();
-    const interval = setInterval(pollIncoming, 3500);
+    const interval = setInterval(pollIncoming, 15000);
 
     return () => {
       clearInterval(interval);

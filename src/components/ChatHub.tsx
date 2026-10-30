@@ -135,17 +135,21 @@ export const ChatHub: React.FC = () => {
     }
   }, [activeThreadId]);
 
-  // Initial & periodic sync polling (every 3.5s for real-time feel)
+  // Chat polling is deliberately slower: reloading all thread/message data every
+  // 3.5 seconds caused heavy repeated Supabase/Postgres egress.
   useEffect(() => {
-    loadChatData();
-    const interval = setInterval(() => {
+    const refreshVisibleChat = () => {
+      if (document.visibilityState !== 'visible') return;
       loadChatData();
-      if (activeThreadId) {
-        loadActiveMessages();
-      }
-    }, 3500);
-
-    return () => clearInterval(interval);
+      if (activeThreadId) loadActiveMessages();
+    };
+    refreshVisibleChat();
+    const interval = setInterval(refreshVisibleChat, 15000);
+    document.addEventListener('visibilitychange', refreshVisibleChat);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshVisibleChat);
+    };
   }, [loadChatData, loadActiveMessages, activeThreadId]);
 
   // Load messages when activeThreadId changes

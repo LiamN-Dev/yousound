@@ -34,6 +34,7 @@ interface LocalDatabaseState {
   chatThreads: any[];
   chatMessages: any[];
   chatPairingBlocks: any[];
+  userDailyListenUsage: Record<string, { usageDate: string; listens: number }>;
 }
 
 class LocalStore {
@@ -42,6 +43,11 @@ class LocalStore {
 
   constructor() {
     this.data = this.loadInitial();
+    // Backfill properties for local_db.json files created by older app versions.
+    this.data.userDailyListenUsage ||= {};
+    for (const user of this.data.users) {
+      if (user.dailyListenLimit === undefined) user.dailyListenLimit = null;
+    }
   }
 
   private loadInitial(): LocalDatabaseState {
@@ -54,6 +60,17 @@ class LocalStore {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.songs)) {
+          parsed.userDailyListenUsage ||= {};
+          parsed.playlists ||= [];
+          parsed.favorites ||= {};
+          parsed.songRequests ||= [];
+          parsed.popups ||= [];
+          parsed.systemSettings ||= {};
+          parsed.mediaFiles ||= {};
+          parsed.chatRequests ||= [];
+          parsed.chatThreads ||= [];
+          parsed.chatMessages ||= [];
+          parsed.chatPairingBlocks ||= [];
           return parsed;
         }
       }
@@ -194,6 +211,7 @@ class LocalStore {
       chatThreads: [],
       chatMessages: [],
       chatPairingBlocks: [],
+      userDailyListenUsage: {},
     };
 
     try {
@@ -283,6 +301,34 @@ class LocalStore {
       user.lastSongListenedAt = new Date().toISOString();
       this.persist();
     }
+  }
+
+  consumeDailyListen(uid: string, usageDate: string) {
+    const user = this.getUserByUid(uid);
+    if (!user) return { allowed: false, listensToday: 0, limit: null as number | null };
+
+    const limit = user.dailyListenLimit === null || user.dailyListenLimit === undefined
+      ? null
+      : Math.max(0, Number(user.dailyListenLimit) || 0);
+    const previous = this.data.userDailyListenUsage[uid];
+    const used = previous?.usageDate === usageDate ? Math.max(0, Number(previous.listens) || 0) : 0;
+
+    if (limit !== null && used >= limit) {
+      return { allowed: false, listensToday: used, limit };
+    }
+
+    const listensToday = used + 1;
+    this.data.userDailyListenUsage[uid] = { usageDate, listens: listensToday };
+    this.persist();
+    return { allowed: true, listensToday, limit };
+  }
+
+  getDailyListenCounts(usageDate: string): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const [uid, usage] of Object.entries(this.data.userDailyListenUsage || {})) {
+      if (usage?.usageDate === usageDate) counts[uid] = Math.max(0, Number(usage.listens) || 0);
+    }
+    return counts;
   }
 
   deleteUser(userIdOrUid: string | number) {

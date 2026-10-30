@@ -43,10 +43,11 @@ interface AuthContextType {
   adminUpdateRequest: (id: string, updates: Partial<SongRequest>) => Promise<SongRequest | null>;
   adminApproveAndProcess: (
     id: string,
-    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string },
+    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string; rightsConfirmed?: boolean },
     googleAccessToken?: string
   ) => Promise<{ success: boolean; request?: SongRequest; error?: string }>;
   adminPublishRequest: (id: string, isPublished: boolean, hideVideo?: boolean) => Promise<{ success: boolean; request?: SongRequest; error?: string }>;
+  adminPublishYouTubeRequest: (id: string, metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string }) => Promise<{ success: boolean; request?: SongRequest; error?: string }>;
 
   // Admin actions
   allUsers: User[];
@@ -67,6 +68,7 @@ interface AuthContextType {
           suspendedReason?: string;
           adminNote?: string;
           colorAccent?: string;
+          dailyListenLimit?: number | null;
         }
       | string,
     newPassword?: string
@@ -126,9 +128,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = storage.subscribe(() => {
       refreshState();
     });
-    const interval = setInterval(() => {
-      storage.syncWithServer();
-    }, 15000);
+    // The previous 15-second timer re-read nine database-backed endpoints per tab.
+    // Refresh every 2 minutes only while the tab is visible and a user is signed in.
+    let lastBackgroundSync = Date.now();
+    const maybeSyncVisibleTab = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!storage.getCurrentSessionUser()) return;
+      if (Date.now() - lastBackgroundSync < 30000) return;
+      lastBackgroundSync = Date.now();
+      storage.syncWithServer().catch(() => {});
+    };
+    const interval = setInterval(maybeSyncVisibleTab, 120000);
+    document.addEventListener('visibilitychange', maybeSyncVisibleTab);
     const expInterval = setInterval(() => {
       const liveUser = storage.getCurrentSessionUser();
       const currentActive = storage.getActivePopupsForUser(liveUser?.id);
@@ -141,6 +152,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => {
       unsubscribe();
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', maybeSyncVisibleTab);
       clearInterval(expInterval);
     };
   }, [refreshState]);
@@ -162,10 +174,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await Promise.race([storage.syncWithServer(), new Promise((resolve) => setTimeout(resolve, 5000))]);
       } catch (_) {}
       refreshState();
-      // One more pass shortly after, in case the first answers were still on their way
-      setTimeout(() => {
-        storage.syncWithServer().then(refreshState).catch(() => {});
-      }, 1500);
     }
     return res;
   };
@@ -252,7 +260,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const adminApproveAndProcess = async (
     id: string,
-    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string },
+    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string; rightsConfirmed?: boolean },
     googleAccessToken?: string
   ) => {
     const result = await storage.adminApproveAndProcess(id, metadata, googleAccessToken);
@@ -262,6 +270,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const adminPublishRequest = async (id: string, isPublished: boolean, hideVideo: boolean = false) => {
     const result = await storage.adminPublishRequest(id, isPublished, hideVideo);
+    setSongRequests(storage.getRequests());
+    return result;
+  };
+
+  const adminPublishYouTubeRequest = async (id: string, metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string }) => {
+    const result = await storage.adminPublishYouTubeRequest(id, metadata);
     setSongRequests(storage.getRequests());
     return result;
   };
@@ -299,6 +313,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           suspendedReason?: string;
           adminNote?: string;
           colorAccent?: string;
+          dailyListenLimit?: number | null;
         }
       | string,
     newPassword?: string
@@ -313,6 +328,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       suspendedReason?: string;
       adminNote?: string;
       colorAccent?: string;
+      dailyListenLimit?: number | null;
     };
 
     if (typeof paramsOrUsername === 'object' && paramsOrUsername !== null) {
@@ -326,6 +342,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         suspendedReason: paramsOrUsername.suspendedReason,
         adminNote: paramsOrUsername.adminNote,
         colorAccent: paramsOrUsername.colorAccent,
+        dailyListenLimit: paramsOrUsername.dailyListenLimit,
       };
     } else {
       params = {
@@ -404,7 +421,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     checkUnread();
-    const interval = setInterval(checkUnread, 4000);
+    // ChatSideNotification already checks thread previews every 15 seconds.
+    // Keep this separate badge count at 60 seconds to avoid duplicate DB reads.
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') checkUnread();
+    }, 60000);
     return () => clearInterval(interval);
   }, [currentUser]);
 
@@ -450,6 +471,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         adminUpdateRequest,
         adminApproveAndProcess,
         adminPublishRequest,
+        adminPublishYouTubeRequest,
         allUsers,
         allPopups,
         approveAccount,

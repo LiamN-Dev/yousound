@@ -63,6 +63,7 @@ class StorageService {
     hideAllOtherElements: true,
   };
   private syncListeners: (() => void)[] = [];
+  private syncInFlight: Promise<void> | null = null;
 
   constructor() {
     this.init();
@@ -148,8 +149,23 @@ class StorageService {
     this.syncListeners.forEach((l) => l());
   }
 
-  // Fetch persistent state from Cloud SQL backend
-  public async syncWithServer() {
+  // Coalesce simultaneous callers so tabs/components cannot launch duplicate full syncs.
+  public async syncWithServer(): Promise<void> {
+    if (this.syncInFlight) {
+      await this.syncInFlight;
+      return;
+    }
+    const run = this.performServerSync();
+    this.syncInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (this.syncInFlight === run) this.syncInFlight = null;
+    }
+  }
+
+  // Fetch persistent state from the backend. Called once at startup, after login, and on a slow visible-tab refresh.
+  private async performServerSync() {
     try {
       const [songsRes, plRes, reqRes, popRes, userRes, bannerRes, maintRes, autoTagsRes, spotlightRes] = await Promise.allSettled([
         fetch('/api/songs'),
@@ -536,7 +552,7 @@ class StorageService {
 
   async adminApproveAndProcess(
     id: string,
-    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string },
+    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string; rightsConfirmed?: boolean },
     googleAccessToken?: string
   ): Promise<{ success: boolean; request?: SongRequest; error?: string }> {
     const idx = this.requests.findIndex((item) => item.id === id);
@@ -610,12 +626,35 @@ class StorageService {
         this.notify();
       }
 
-      // Refresh public library songs
-      await this.init();
+      // Re-read the canonical server library so a newly published Drive-hosted song appears immediately.
+      await this.syncWithServer();
       return { success: true, request: data.request };
     } catch (err: any) {
       console.error('Publish request error:', err);
       return { success: false, error: err.message };
+    }
+  }
+
+  async adminPublishYouTubeRequest(
+    id: string,
+    metadata: { songTitle: string; artist: string; coverUrl?: string; genre?: string }
+  ): Promise<{ success: boolean; request?: SongRequest; error?: string }> {
+    try {
+      const res = await fetch(`/api/admin/requests/${encodeURIComponent(id)}/publish-youtube`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not publish the YouTube link.');
+      const idx = this.requests.findIndex((item) => item.id === id);
+      if (idx !== -1 && data.request) this.requests[idx] = data.request;
+      this.saveRequests();
+      this.notify();
+      await this.syncWithServer();
+      return { success: true, request: data.request };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Could not publish the YouTube link.' };
     }
   }
 
@@ -687,8 +726,7 @@ class StorageService {
 
       this.setCurrentSessionUser(data.user);
       this.notify();
-      // Background sync so user transitions instantly without delay or reload
-      this.syncWithServer().catch(() => {});
+      // AuthContext performs one canonical sync after login.
       return { success: true, user: data.user };
     } catch (err: any) {
       return { success: false, error: err.message || 'Connection error' };
@@ -892,7 +930,7 @@ class StorageService {
       return {
         service: 'gdrive',
         fileId,
-        streamUrl: `/api/media/drive-stream/${fileId}`,
+        streamUrl: `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`,
         displayName: 'Google Drive Audio Stream',
       };
     }
@@ -901,7 +939,7 @@ class StorageService {
       return {
         service: 'gdrive',
         fileId: trimmed,
-        streamUrl: `/api/media/drive-stream/${trimmed}`,
+        streamUrl: `https://drive.google.com/uc?export=download&id=${encodeURIComponent(trimmed)}`,
         displayName: 'Google Drive Audio Stream',
       };
     }
@@ -1077,6 +1115,7 @@ class StorageService {
       suspendedReason?: string;
       adminNote?: string;
       colorAccent?: string;
+      dailyListenLimit?: number | null;
     }
   ): Promise<{ success: boolean; error?: string }> {
     try {
@@ -1106,6 +1145,7 @@ class StorageService {
             ...(typeof params.isApproved === 'boolean' ? { isApproved: params.isApproved } : {}),
             ...(typeof params.chatBlocked === 'boolean' ? { chatBlocked: params.chatBlocked } : {}),
             ...(typeof params.isSuspended === 'boolean' ? { isSuspended: params.isSuspended, suspendedReason: params.suspendedReason } : {}),
+            ...(params.dailyListenLimit !== undefined ? { dailyListenLimit: params.dailyListenLimit } : {}),
           };
         });
       }
@@ -1142,6 +1182,50 @@ class StorageService {
       console.error('Update user accent error:', e);
     }
     return false;
+  }
+
+  /** Ask the server to atomically consume one listen before starting playback. */
+  async authorizeSongListen(songId: string): Promise<{
+    allowed: boolean;
+    error?: string;
+    listensToday?: number;
+    dailyListenLimit?: number | null;
+  }> {
+    try {
+      const res = await fetch(`/api/songs/${encodeURIComponent(songId)}/play`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        return {
+          allowed: false,
+          error: data.error || 'Your listen could not be verified. Please try again.',
+          listensToday: data.listensToday,
+          dailyListenLimit: data.dailyListenLimit,
+        };
+      }
+      return {
+        allowed: true,
+        listensToday: data.listensToday,
+        dailyListenLimit: data.dailyListenLimit,
+      };
+    } catch {
+      // Fail closed: never play a restricted account's track if the server cannot verify its limit.
+      return { allowed: false, error: 'Unable to verify your daily listen allowance. Check your connection and try again.' };
+    }
+  }
+
+  recordSongListenLocally(userId: string, songTitle: string, songArtist?: string): void {
+    const summary = songArtist ? `${songTitle} · ${songArtist}` : songTitle;
+    this.users = this.users.map((u) => u.id === userId ? { ...u, lastSongListened: summary, lastSongListenedAt: new Date().toISOString() } : u);
+    const current = this.getCurrentSessionUser();
+    if (current && current.id === userId) {
+      this.setCurrentSessionUser({ ...current, lastSongListened: summary, lastSongListenedAt: new Date().toISOString() });
+    }
+    this.saveUsers();
+    this.notify();
   }
 
   async recordSongListen(userId: string, songTitle: string, songArtist?: string): Promise<void> {
@@ -1391,7 +1475,7 @@ class StorageService {
     this.notify();
   }
 
-  recordPlay(songId: string, userRole?: string) {
+  recordPlay(songId: string, userRole?: string, syncToServer: boolean = true) {
     // ADMIN LISTENS SHOULD NEVER COUNT TOWARDS ANYTHING
     if (userRole === 'admin') {
       return;
@@ -1415,16 +1499,18 @@ class StorageService {
 
       this.saveSongs();
       this.notify();
-      fetch(`/api/songs/${encodeURIComponent(songId)}/play`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: userRole }),
-      }).catch(() => {});
+      if (syncToServer) {
+        fetch(`/api/songs/${encodeURIComponent(songId)}/play`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }).catch(() => {});
+      }
     }
   }
 
-  incrementSongPlay(songId: string, userRole?: string) {
-    this.recordPlay(songId, userRole);
+  incrementSongPlay(songId: string, userRole?: string, syncToServer: boolean = true) {
+    this.recordPlay(songId, userRole, syncToServer);
   }
 
   async resetSongPlays(songId: string): Promise<boolean> {

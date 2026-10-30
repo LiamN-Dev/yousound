@@ -23,7 +23,19 @@ CREATE TABLE IF NOT EXISTS users (
   suspended_reason TEXT,
   admin_note TEXT,
   color_accent TEXT,
+  daily_listen_limit INTEGER, -- NULL = unlimited, 0 = no listens allowed
   created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Upgrade existing installations safely.
+ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS daily_listen_limit INTEGER;
+
+-- One atomic listen counter per user per UTC calendar day.
+CREATE TABLE IF NOT EXISTS user_daily_listen_usage (
+  uid TEXT NOT NULL,
+  usage_date DATE NOT NULL,
+  listens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (uid, usage_date)
 );
 
 -- 2. Songs Table
@@ -200,3 +212,4 @@ CREATE INDEX IF NOT EXISTS idx_requests_status ON song_requests(status);
 CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(user_id);
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_user_daily_listen_usage_date ON user_daily_listen_usage(usage_date);
